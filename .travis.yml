@@ -3,8 +3,8 @@ dist: bionic
 language: python
 python:
   - '3.8'
-  - '3.7'
-  - '3.6'
+  # - '3.7'
+  # - '3.6'
 install:
   # Upstream defaults to world-read-writeable /dev/kvm. Debian/Ubuntu override
   # this; see https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=892945. We want
@@ -14,7 +14,7 @@ install:
   # On systemd >= 238 we can use udevadm trigger -w and remove udevadm settle.
   - sudo udevadm trigger /dev/kvm
   - sudo udevadm settle
-script: python setup.py test -K
+script: ./rrsh.sh
 
 addons:
   apt:

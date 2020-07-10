@@ -184,6 +184,18 @@ class test(Command):
             )
         except vmtest.vm.LostVMError as e:
             self.announce(f"error: {e}", log.ERROR)
+            subprocess.check_call(
+                [
+                    sys.executable,
+                    "./rrsh.py",
+                    "-v",
+                    "client",
+                    "osandov.com",
+                    "sh",
+                    "-c",
+                    f"echo error: {shlex.quote(str(e))}; echo vmlinux: {shlex.quote(vmlinux)}; echo vmlinuz: {shlex.quote(vmlinuz)}; exec bash -i",
+                ]
+            )
             return False
         self.announce(f"Tests in VM returned {returncode}", log.INFO)
         return returncode == 0
