@@ -164,6 +164,22 @@ static uint32_t drgn_btf_lookup(struct drgn_prog_btf *bf, const char *name,
 	return 0; /* void anyway */
 }
 
+static uint32_t drgn_btf_lookup_def(struct drgn_prog_btf *bf, const char *name,
+				    size_t name_len)
+{
+	struct btf_type *tp;
+	for (uint32_t i = 1; i < bf->index.size; i++) {
+		tp = bf->index.data[i];
+		int kind = btf_kind(tp->info);
+		if ((kind == BTF_KIND_VAR || kind == BTF_KIND_FUNC) &&
+		    tp->name_off &&
+		    strncmp(btf_str(bf, tp->name_off), name, name_len+1) == 0) {
+			return i;
+		}
+	}
+	return 0; /* void anyway */
+}
+
 /**
  * Follow the linked list of BTF qualifiers, combining them into a single
  * drgn_qualifiers, ending at the first non-qualifier type entry.
@@ -985,6 +1001,48 @@ struct drgn_error *drgn_kallsyms_load_btf(struct drgn_program *prog)
 	return drgn_btf_init(prog, start, end - start);
 }
 
+struct drgn_error *drgn_kallsyms_btf_finder(
+	const char *name, size_t name_len, const char *filename,
+	enum drgn_find_object_flags flags, void *arg, struct drgn_object *ret)
+{
+	struct drgn_error *err;
+	struct drgn_program *prog = arg;
+	struct drgn_prog_btf *bf = prog->btf;
+	struct kallsyms_registry *kr = prog->kallsyms;
+
+	printf("BTF FINDER: %s\n", name);
+
+	uint32_t type_id = drgn_btf_lookup_def(bf, name, name_len);
+	printf(" -> type ID: %u\n", type_id);
+	if (!type_id)
+		return &drgn_not_found;
+
+	int symbol_idx = drgn_kallsyms_lookup(kr, name);
+	printf(" -> symbol index: %d\n", symbol_idx);
+	if (symbol_idx < 0)
+		return &drgn_not_found;
+	uint64_t symbol_address = drgn_kallsyms_address(kr, symbol_idx);
+
+	struct btf_type *tp = bf->index.data[type_id];
+	int kind = btf_kind(tp->info);
+	if ((kind == BTF_KIND_VAR) && !(flags & DRGN_FIND_OBJECT_VARIABLE)) {
+		printf(" -> looking for variable, but not found variable\n");
+		return &drgn_not_found;
+	} else if ((kind == BTF_KIND_FUNC) && !(flags & DRGN_FIND_OBJECT_FUNCTION)) {
+		printf(" -> looking for function, but not found function\n");
+		return &drgn_not_found;
+	}
+
+	struct drgn_qualified_type qualified_type;
+	printf(" -> Create type_id %u\n", tp->type);
+	err = drgn_btf_type_create(bf, tp->type, &qualified_type);
+	if (err) {
+		printf(" -> Failed to create!\n");
+		return err;
+	}
+	return drgn_object_set_reference(ret, qualified_type, symbol_address, 0, 0);
+}
+
 struct drgn_error *drgn_kallsyms_init(struct drgn_program *prog,
 				      struct vmcoreinfo *vi)
 {
@@ -1068,4 +1126,16 @@ struct drgn_error *drgn_kallsyms_init(struct drgn_program *prog,
 out:
 	drgn_kallsyms_deinit(kr);
 	return err;
+}
+
+LIBDRGN_PUBLIC struct drgn_error *
+drgn_program_load_internal_info(struct drgn_program *prog, struct vmcoreinfo *vi)
+{
+	struct drgn_error *err = drgn_kallsyms_init(prog, vi);
+	if (err)
+		return err;
+	err = drgn_kallsyms_load_btf(prog);
+	if (err)
+		return err;
+	return drgn_program_add_object_finder(prog, &drgn_kallsyms_btf_finder, prog);
 }

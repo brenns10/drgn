@@ -677,15 +677,6 @@ drgn_program_load_debug_info(struct drgn_program *prog, const char **paths,
 	return err;
 }
 
-LIBDRGN_PUBLIC struct drgn_error *
-drgn_program_load_internal_info(struct drgn_program *prog, struct vmcoreinfo *vi)
-{
-	struct drgn_error *err = drgn_kallsyms_init(prog, vi);
-	if (err)
-		return err;
-	return drgn_kallsyms_load_btf(prog);
-}
-
 static struct drgn_error *get_prstatus_pid(struct drgn_program *prog, const char *data,
 					   size_t size, uint32_t *ret)
 {
