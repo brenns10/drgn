@@ -203,5 +203,7 @@ struct btf_decl_tag {
 };
 
 struct drgn_error *drgn_btf_init(struct drgn_program *prog, uint64_t start, uint64_t bytes);
-
+struct drgn_error *drgn_kallsyms_init(struct drgn_program *prog,
+				      struct vmcoreinfo *vi);
+struct drgn_error *drgn_kallsyms_load_btf(struct drgn_program *prog);
 #endif /* DRGN_BTF_H */

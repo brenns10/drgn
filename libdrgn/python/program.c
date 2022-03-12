@@ -745,15 +745,18 @@ static PyObject *Program_stack_trace(Program *self, PyObject *args,
 	return ret;
 }
 
-static PyObject *Program_add_btf_info(Program *self, PyObject *args)
+static PyObject *Program_add_internal_info(Program *self, PyObject *args)
 {
 	struct drgn_error *err;
-	uint64_t addr, size;
+	struct vmcoreinfo vi = {0};
 
-	if (!PyArg_ParseTuple(args, "KK:symbols", &addr, &size))
+	if (!PyArg_ParseTuple(args, "KKKKKKK:symbols", &vi.kallsyms_names,
+			      &vi.kallsyms_token_table, &vi.kallsyms_token_index,
+			      &vi.kallsyms_num_syms, &vi.kallsyms_offsets,
+			      &vi.kallsyms_relative_base, &vi._stext))
 		return NULL;
 
-	err = drgn_program_load_btf(&self->prog, addr, size);
+	err = drgn_program_load_internal_info(&self->prog, &vi);
 	if (err)
 		return set_drgn_error(err);
 	return Py_None;
@@ -1055,7 +1058,7 @@ static PyMethodDef Program_methods[] = {
 	 METH_VARARGS | METH_KEYWORDS, drgn_Program_stack_trace_DOC},
 	{"symbols", (PyCFunction)Program_symbols, METH_VARARGS,
 	 drgn_Program_symbols_DOC},
-	{"add_btf_info", (PyCFunction)Program_add_btf_info, METH_VARARGS,
+	{"add_internal_info", (PyCFunction)Program_add_internal_info, METH_VARARGS,
 	 drgn_Program_symbols_DOC},
 	{"symbol", (PyCFunction)Program_symbol, METH_O,
 	 drgn_Program_symbol_DOC},

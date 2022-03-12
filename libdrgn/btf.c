@@ -762,11 +762,310 @@ struct drgn_error *drgn_btf_init(struct drgn_program *prog, uint64_t start,
 	err = drgn_program_add_type_finder(prog, drgn_type_from_btf, pbtf);
 	if (err)
 		goto out_free;
+	prog->btf = pbtf;
 	return err;
 out_free:
 	free(pbtf->cache);
 	free(pbtf->ptr);
 	type_vector_deinit(&pbtf->index);
 	free(pbtf);
+	return err;
+}
+
+enum kallsyms_address_strategy {
+	/** Address is simply the value of kallsyms_addresses[i] */
+	KALLSYMS_ABSOLUTE,
+	/** Address is kallsyms_offsets[i] + kallsyms_relative_base */
+	KALLSYMS_BASE_RELATIVE,
+	/** Positive address is absolute, negative is base relative */
+	KALLSYMS_HYBRID,
+};
+
+struct kallsyms_registry {
+	struct drgn_program *prog;
+	enum kallsyms_address_strategy strategy;
+
+	uint32_t num_syms;
+	uint8_t *names;
+	char *token_table;
+	uint16_t *token_index;
+
+	union {
+		uint32_t *offsets;
+		uint64_t *addresses;
+	};
+	uint64_t relative_base;
+};
+
+static const unsigned int KALLSYMS_MAX_LEN = 128;
+
+static struct drgn_error *
+kallsyms_copy_tables(struct kallsyms_registry *kr, struct vmcoreinfo *vi)
+{
+	struct drgn_error *err;
+	const size_t token_index_size = (UINT8_MAX + 1) * sizeof(uint16_t);
+	uint64_t last_token;
+	size_t token_table_size, names_idx;
+	char data;
+	uint8_t len;
+
+	// Read num_syms from vmcore
+	printf("Try reading num_syms from 0x%lx...\n", vi->kallsyms_num_syms);
+	err = drgn_program_read_u32(kr->prog,
+				    vi->kallsyms_num_syms,
+				    false, &kr->num_syms);
+	if (err)
+		return err;
+	printf("num_syms = %u\n", kr->num_syms);
+
+	// Read the constant-sized token_index table (256 entries)
+	kr->token_index = malloc(token_index_size);
+	if (!kr->token_index)
+		return &drgn_enomem;
+	err = drgn_program_read_memory(kr->prog, kr->token_index,
+				       vi->kallsyms_token_index,
+				       token_index_size, false);
+	if (err)
+		goto out;
+	printf("Read the token_index!\n");
+
+	/*
+	 * Find the end of the last token, so we get the overall length of
+	 * token_table. Then copy the token_table into host memory.
+	 */
+	last_token = vi->kallsyms_token_table + kr->token_index[UINT8_MAX];
+	do {
+		err = drgn_program_read_u8(kr->prog, last_token, false,
+					   (uint8_t *)&data);
+		if (err)
+			goto out;
+
+		last_token++;
+	} while (data);
+	token_table_size = last_token - vi->kallsyms_token_table + 1;
+	kr->token_table = malloc(token_table_size);
+	if (!kr->token_table) {
+		err = &drgn_enomem;
+		goto out;
+	}
+	err = drgn_program_read_memory(kr->prog, kr->token_table,
+				       vi->kallsyms_token_table,
+				       token_table_size, false);
+	if (err)
+		goto out;
+	printf("Read the token_table (size %lu)\n", token_table_size);
+
+	/* Now find the end of the names array by skipping through it, then copy
+	 * that into host memory. */
+	names_idx = 0;
+	for (size_t i = 0; i < kr->num_syms; i++) {
+		err = drgn_program_read_u8(kr->prog,
+					   vi->kallsyms_names + names_idx,
+					   false, &len);
+		if (err)
+			goto out;
+		names_idx += len + 1;
+	}
+	kr->names = malloc(names_idx);
+	if (!kr->names) {
+		err = &drgn_enomem;
+		goto out;
+	}
+	err = drgn_program_read_memory(kr->prog, kr->names,
+				       vi->kallsyms_names,
+				       names_idx, false);
+	if (err)
+		goto out;
+	printf("Read the names array (size %lu)!\n", names_idx);
+	return NULL;
+out:
+	free(kr->token_table);
+	free(kr->token_index);
+	return err;
+}
+
+unsigned int
+kallsyms_expand_symbol(struct kallsyms_registry *kr, unsigned int offset,
+		       char *result, size_t maxlen, char *kind_ret)
+{
+	uint8_t *data = &kr->names[offset];
+	unsigned int len = *data;
+	bool skipped_first = false;
+
+	offset += len + 1;
+	data += 1;
+	while (len) {
+		char *token_ptr = &kr->token_table[kr->token_index[*data]];
+		while (*token_ptr) {
+			if (skipped_first) {
+				if (maxlen <= 1)
+					goto tail;
+				*result = *token_ptr;
+				result++;
+				maxlen--;
+			} else {
+				if (kind_ret)
+					*kind_ret = *token_ptr;
+				skipped_first = true;
+			}
+			token_ptr++;
+		}
+
+		data++;
+		len--;
+	}
+
+tail:
+	*result = '\0';
+	return offset;
+}
+
+static int
+drgn_kallsyms_lookup(struct kallsyms_registry *kr, const char *name)
+{
+	char buf[KALLSYMS_MAX_LEN + 1];
+	unsigned int off = 0;
+	for (int i = 0; i < kr->num_syms; i++) {
+		off = kallsyms_expand_symbol(kr, off, buf, sizeof(buf), NULL);
+		if (strncmp(buf, name, sizeof(buf)) == 0)
+			return i;
+	}
+	return -1;
+}
+
+static uint64_t
+drgn_kallsyms_address_by(struct kallsyms_registry *kr, unsigned int offset,
+			 enum kallsyms_address_strategy strategy)
+{
+	int32_t val;
+	switch (strategy) {
+	case KALLSYMS_ABSOLUTE:
+		return kr->addresses[offset];
+	case KALLSYMS_BASE_RELATIVE:
+		return kr->relative_base + kr->offsets[offset];
+	case KALLSYMS_HYBRID:
+		val = (int32_t)kr->offsets[offset];
+		if (val >= 0)
+			return val;
+		else
+			return kr->relative_base - 1 - val;
+	}
+}
+
+static uint64_t
+drgn_kallsyms_address(struct kallsyms_registry *kr, unsigned int offset)
+{
+	return drgn_kallsyms_address_by(kr, offset, kr->strategy);
+}
+
+void drgn_kallsyms_deinit(struct kallsyms_registry *kr)
+{
+	free(kr->addresses);
+	free(kr->names);
+	free(kr->token_table);
+	free(kr->token_index);
+	free(kr);
+}
+
+struct drgn_error *drgn_kallsyms_load_btf(struct drgn_program *prog)
+{
+	struct kallsyms_registry *kr = prog->kallsyms;
+	int index = drgn_kallsyms_lookup(kr, "__start_BTF");
+	uint64_t start, end;
+	if (index < 0) {
+		return &drgn_not_found;
+	}
+	start = drgn_kallsyms_address(kr, index);
+	index = drgn_kallsyms_lookup(kr, "__stop_BTF");
+	if (index < 0) {
+		return &drgn_not_found;
+	}
+	end = drgn_kallsyms_address(kr, index);
+	printf("__start_BTF=0x%lx, __stop_BTF=0x%lx\n", start, end);
+	return drgn_btf_init(prog, start, end - start);
+}
+
+struct drgn_error *drgn_kallsyms_init(struct drgn_program *prog,
+				      struct vmcoreinfo *vi)
+{
+	//struct vmcoreinfo *vi = &prog->vmcoreinfo;
+	struct drgn_error *err;
+	struct kallsyms_registry *kr;
+
+	if (!(vi->kallsyms_names && vi->kallsyms_token_table
+	      && vi->kallsyms_token_index && vi->kallsyms_num_syms))
+		return NULL;
+
+	kr = calloc(1, sizeof(*kr));
+	if (!kr)
+		return &drgn_enomem;
+
+	kr->prog = prog;
+	err = kallsyms_copy_tables(kr, vi);
+	if (err)
+		goto out;
+
+	if (vi->kallsyms_addresses) {
+		printf("Found kallsyms_addresses, we must be KALLSYMS_ABSOLUTE\n");
+		kr->strategy = KALLSYMS_ABSOLUTE;
+		kr->addresses = malloc(kr->num_syms * sizeof(uint64_t));
+		if (!kr->addresses) {
+			err = &drgn_enomem;
+			goto out;
+		}
+		err = drgn_program_read_memory(prog, kr->addresses,
+					       vi->kallsyms_addresses,
+					       kr->num_syms * sizeof(uint64_t),
+					       false);
+		if (err)
+			goto out;
+	} else if (vi->kallsyms_offsets && vi->kallsyms_relative_base
+		   && vi->_stext) {
+		printf("Found kallsyms_offsets etc, loading offsets and determining strategy...\n");
+		kr->offsets = malloc(kr->num_syms * sizeof(uint32_t));
+		if (!kr->offsets) {
+			err = &drgn_enomem;
+			goto out;
+		}
+		err = drgn_program_read_memory(prog, kr->offsets,
+					       vi->kallsyms_offsets,
+					       kr->num_syms * sizeof(uint32_t),
+					       false);
+		if (err)
+			goto out;
+		err = drgn_program_read_u64(prog, vi->kallsyms_relative_base,
+					    false, &kr->relative_base);
+		if (err)
+			goto out;
+
+		/* Could be relative or hybrid, to test, let's read an address
+		 * in both ways. Search for _stext
+		 */
+		int stext_index = drgn_kallsyms_lookup(kr, "_stext");
+		if (stext_index < 0) {
+			err = drgn_error_create(
+				DRGN_ERROR_OTHER,
+				"Could not find _stext symbol in kallsyms");
+			goto out;
+		}
+		printf("_stext_index=%d\n", stext_index);
+		if (drgn_kallsyms_address_by(kr, stext_index, KALLSYMS_BASE_RELATIVE) == vi->_stext) {
+			kr->strategy = KALLSYMS_BASE_RELATIVE;
+		} else if (drgn_kallsyms_address_by(kr, stext_index, KALLSYMS_HYBRID) == vi->_stext) {
+			kr->strategy = KALLSYMS_HYBRID;
+		} else {
+			err = drgn_error_create(
+				DRGN_ERROR_OTHER,
+				"Could not correctly compute _stext address");
+			goto out;
+		}
+		printf("Determined strategy %d\n", kr->strategy);
+	} else {
+		goto out;
+	}
+	prog->kallsyms = kr;
+	return NULL;
+out:
+	drgn_kallsyms_deinit(kr);
 	return err;
 }

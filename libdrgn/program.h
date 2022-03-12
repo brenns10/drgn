@@ -30,6 +30,9 @@
 
 struct drgn_symbol;
 
+struct drgn_prog_btf;
+struct kallsyms_registry;
+
 /**
  * @defgroup Internals Internals
  *
@@ -62,6 +65,17 @@ struct vmcoreinfo {
 	uint64_t swapper_pg_dir;
 	/** Whether 5-level paging was enabled. */
 	bool pgtable_l5_enabled;
+	/**
+	 * Kallsyms related symbols
+	 */
+	uint64_t kallsyms_names;
+	uint64_t kallsyms_token_table;
+	uint64_t kallsyms_token_index;
+	uint64_t kallsyms_num_syms;
+	uint64_t kallsyms_offsets;
+	uint64_t kallsyms_relative_base;
+	uint64_t kallsyms_addresses;
+	uint64_t _stext;
 };
 
 struct drgn_thread {
@@ -172,6 +186,9 @@ struct drgn_program {
 	 * to prevent address translation from recursing.
 	 */
 	bool pgtable_it_in_use;
+
+	struct drgn_prog_btf *btf;
+	struct kallsyms_registry *kallsyms;
 };
 
 /** Initialize a @ref drgn_program. */

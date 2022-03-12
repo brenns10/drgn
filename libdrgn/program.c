@@ -678,9 +678,12 @@ drgn_program_load_debug_info(struct drgn_program *prog, const char **paths,
 }
 
 LIBDRGN_PUBLIC struct drgn_error *
-drgn_program_load_btf(struct drgn_program *prog, uint64_t addr, uint64_t size)
+drgn_program_load_internal_info(struct drgn_program *prog, struct vmcoreinfo *vi)
 {
-	return drgn_btf_init(prog, addr, size);
+	struct drgn_error *err = drgn_kallsyms_init(prog, vi);
+	if (err)
+		return err;
+	return drgn_kallsyms_load_btf(prog);
 }
 
 static struct drgn_error *get_prstatus_pid(struct drgn_program *prog, const char *data,
