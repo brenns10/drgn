@@ -20,6 +20,7 @@
 
 #include "btf.h"
 #include "debug_info.h"
+#include "drgn.h"
 #include "error.h"
 #include "helpers.h"
 #include "language.h"
@@ -633,6 +634,9 @@ static int drgn_set_platform_from_dwarf(Dwfl_Module *module, void **userdatap,
 	return DWARF_CB_ABORT;
 }
 
+struct drgn_error *
+drgn_program_load_internal_info(struct drgn_program *prog, struct vmcoreinfo *vi);
+
 LIBDRGN_PUBLIC struct drgn_error *
 drgn_program_load_debug_info(struct drgn_program *prog, const char **paths,
 			     size_t n, bool load_default, bool load_main)
@@ -667,11 +671,20 @@ drgn_program_load_debug_info(struct drgn_program *prog, const char **paths,
 
 	err = drgn_debug_info_load(dbinfo, paths, n, load_default, load_main);
 	if ((!err || err->code == DRGN_ERROR_MISSING_DEBUG_INFO)) {
+		struct drgn_error *saved;
 		if (!prog->lang)
 			drgn_program_set_language_from_main(prog);
 		if (!prog->has_platform) {
 			dwfl_getdwarf(dbinfo->dwfl,
 				      drgn_set_platform_from_dwarf, prog, 0);
+		}
+		saved = err;
+		err = drgn_program_load_internal_info(prog, &prog->vmcoreinfo);
+		if (!err) {
+			drgn_error_destroy(saved);
+		} else {
+			drgn_error_destroy(err);
+			err = saved;
 		}
 	}
 	return err;
