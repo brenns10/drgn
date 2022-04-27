@@ -852,13 +852,13 @@ kallsyms_copy_tables(struct kallsyms_registry *kr, struct vmcoreinfo *vi)
 	uint8_t len;
 
 	// Read num_syms from vmcore
-	printf("Try reading num_syms from 0x%lx...\n", vi->kallsyms_num_syms);
+	//printf("Try reading num_syms from 0x%lx...\n", vi->kallsyms_num_syms);
 	err = drgn_program_read_u32(kr->prog,
 				    vi->kallsyms_num_syms,
 				    false, &kr->num_syms);
 	if (err)
 		return err;
-	printf("num_syms = %u\n", kr->num_syms);
+	//printf("num_syms = %u\n", kr->num_syms);
 
 	// Read the constant-sized token_index table (256 entries)
 	kr->token_index = malloc(token_index_size);
@@ -869,7 +869,7 @@ kallsyms_copy_tables(struct kallsyms_registry *kr, struct vmcoreinfo *vi)
 				       token_index_size, false);
 	if (err)
 		goto out;
-	printf("Read the token_index!\n");
+	//printf("Read the token_index!\n");
 
 	/*
 	 * Find the end of the last token, so we get the overall length of
@@ -895,7 +895,7 @@ kallsyms_copy_tables(struct kallsyms_registry *kr, struct vmcoreinfo *vi)
 				       token_table_size, false);
 	if (err)
 		goto out;
-	printf("Read the token_table (size %lu)\n", token_table_size);
+	//printf("Read the token_table (size %lu)\n", token_table_size);
 
 	/* Now find the end of the names array by skipping through it, then copy
 	 * that into host memory. */
@@ -918,7 +918,7 @@ kallsyms_copy_tables(struct kallsyms_registry *kr, struct vmcoreinfo *vi)
 				       names_idx, false);
 	if (err)
 		goto out;
-	printf("Read the names array (size %lu)!\n", names_idx);
+	//printf("Read the names array (size %lu)!\n", names_idx);
 	return NULL;
 out:
 	free(kr->token_table);
@@ -1023,7 +1023,7 @@ struct drgn_error *drgn_kallsyms_load_btf(struct drgn_program *prog)
 		return &drgn_not_found;
 	}
 	end = drgn_kallsyms_address(kr, index);
-	printf("__start_BTF=0x%lx, __stop_BTF=0x%lx\n", start, end);
+	//printf("__start_BTF=0x%lx, __stop_BTF=0x%lx\n", start, end);
 	return drgn_btf_init(prog, start, end - start);
 }
 
@@ -1131,7 +1131,7 @@ struct drgn_error *drgn_kallsyms_init(struct drgn_program *prog,
 			goto out;
 	} else if (vi->kallsyms_offsets && vi->kallsyms_relative_base
 		   && vi->_stext) {
-		printf("Found kallsyms_offsets etc, loading offsets and determining strategy...\n");
+		//printf("Found kallsyms_offsets etc, loading offsets and determining strategy...\n");
 		kr->offsets = malloc(kr->num_syms * sizeof(uint32_t));
 		if (!kr->offsets) {
 			err = &drgn_enomem;
@@ -1158,7 +1158,7 @@ struct drgn_error *drgn_kallsyms_init(struct drgn_program *prog,
 				"Could not find _stext symbol in kallsyms");
 			goto out;
 		}
-		printf("_stext_index=%d\n", stext_index);
+		//printf("_stext_index=%d\n", stext_index);
 		if (drgn_kallsyms_address_by(kr, stext_index, KALLSYMS_BASE_RELATIVE) == vi->_stext) {
 			kr->strategy = KALLSYMS_BASE_RELATIVE;
 		} else if (drgn_kallsyms_address_by(kr, stext_index, KALLSYMS_HYBRID) == vi->_stext) {
@@ -1169,7 +1169,7 @@ struct drgn_error *drgn_kallsyms_init(struct drgn_program *prog,
 				"Could not correctly compute _stext address");
 			goto out;
 		}
-		printf("Determined strategy %d\n", kr->strategy);
+		//printf("Determined strategy %d\n", kr->strategy);
 	} else {
 		goto out;
 	}
