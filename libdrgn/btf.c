@@ -1084,7 +1084,6 @@ check_enum:
 		uint32_t enumerator;
 		type_id = drgn_btf_lookup_enumval(bf, name, name_len, &enumerator);
 		if (type_id) {
-			printf("Found type_id=%u, enumerator=%u\n", type_id, enumerator);
 			tp = bf->index.data[type_id];
 			struct btf_enum *enum_ = (struct btf_enum *)&tp[1];
 			err = drgn_btf_type_create(bf, type_id, &qualified_type);
