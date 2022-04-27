@@ -14,6 +14,7 @@ struct drgn_symbol {
 	uint64_t size;
 	enum drgn_symbol_binding binding;
 	enum drgn_symbol_kind kind;
+	bool name_owned;
 };
 
 /** Initialize a @ref drgn_symbol from an ELF symbol. */

@@ -117,8 +117,7 @@ drgn_format_stack_trace(struct drgn_stack_trace *trace, char **ret)
 			Dwfl_Module *dwfl_module =
 				regs->module ? regs->module->dwfl_module : NULL;
 			struct drgn_symbol sym;
-			if (dwfl_module &&
-			    drgn_program_find_symbol_by_address_internal(trace->prog,
+			if (drgn_program_find_symbol_by_address_internal(trace->prog,
 									 pc.value - !regs->interrupted,
 									 dwfl_module,
 									 &sym)) {

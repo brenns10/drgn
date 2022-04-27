@@ -11,6 +11,8 @@
 
 LIBDRGN_PUBLIC void drgn_symbol_destroy(struct drgn_symbol *sym)
 {
+	if (sym->name_owned)
+		free((char *)sym->name);
 	free(sym);
 }
 
@@ -38,6 +40,7 @@ void drgn_symbol_from_elf(const char *name, uint64_t address,
 		ret->kind = type;
 	else
 		ret->kind = DRGN_SYMBOL_KIND_UNKNOWN;
+	ret->name_owned = false;
 }
 
 LIBDRGN_PUBLIC const char *drgn_symbol_name(struct drgn_symbol *sym)

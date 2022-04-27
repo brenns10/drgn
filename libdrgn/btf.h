@@ -206,4 +206,8 @@ struct drgn_error *drgn_btf_init(struct drgn_program *prog, uint64_t start, uint
 struct drgn_error *drgn_kallsyms_init(struct drgn_program *prog,
 				      struct vmcoreinfo *vi);
 struct drgn_error *drgn_kallsyms_load_btf(struct drgn_program *prog);
+
+
+bool drgn_kallsyms_lookup_address(struct kallsyms_registry *kr, uint64_t address,
+				  struct drgn_symbol *ret);
 #endif /* DRGN_BTF_H */

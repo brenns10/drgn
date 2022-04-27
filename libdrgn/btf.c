@@ -6,6 +6,7 @@
 #include "lazy_object.h"
 #include "memory_reader.h"
 #include "program.h"
+#include "symbol.h"
 
 DEFINE_VECTOR(type_vector, struct btf_type *);
 
@@ -1093,6 +1094,71 @@ check_enum:
 		}
 	}
 	return &drgn_not_found;
+}
+
+void drgn_symbol_from_kallsyms(struct kallsyms_registry *kr, int index,
+			       int offset, struct drgn_symbol *ret)
+{
+	char buf[KALLSYMS_MAX_LEN + 1];
+	uint32_t btf_idx;
+	struct drgn_prog_btf *bf = kr->prog->btf;
+	struct btf_type *tp;
+	kallsyms_expand_symbol(kr, offset, buf, sizeof(buf), NULL);
+	ret->name = strdup(buf);
+	ret->name_owned = true;
+	ret->address = drgn_kallsyms_address(kr, index);
+	ret->size = drgn_kallsyms_address(kr, index + 1) - ret->address;
+	ret->binding = DRGN_SYMBOL_BINDING_GLOBAL;
+
+	btf_idx = drgn_btf_lookup_def(bf, buf, strlen(buf));
+	if (btf_idx) {
+		tp = bf->index.data[btf_idx];
+		int kind = btf_kind(tp->info);
+		if (kind == BTF_KIND_FUNC)
+			ret->kind = DRGN_SYMBOL_KIND_FUNC;
+		else if (kind == BTF_KIND_VAR)
+			ret->kind = DRGN_SYMBOL_KIND_OBJECT;
+		else
+			ret->kind = DRGN_SYMBOL_KIND_UNKNOWN;
+	} else {
+		ret->kind = DRGN_SYMBOL_KIND_UNKNOWN;
+	}
+}
+
+bool drgn_kallsyms_lookup_address(struct kallsyms_registry *kr, uint64_t address,
+				  struct drgn_symbol *ret)
+{
+	uint64_t begin = drgn_kallsyms_address(kr, 0);
+	uint64_t end = drgn_kallsyms_address(kr, kr->num_syms - 1);
+	int index = -1;
+	int offset = 0;
+
+	/* NB: technically, the end is a symbol too, with some size, and so
+	 * using the end address here means that we could miss looking up an
+	 * address within the last symbol's range. The kernel handles this by
+	 * looking for the end of the section to use as the last address.
+	 *
+	 * We don't bother doing that here. The last symbol is likely just a
+	 * marker (like _etext) or something else, and this code explicitly
+	 * ignores it. This could be a mistake.
+	 */
+	if (address < begin || address > end)
+		return false;
+
+	for (int i = 1; i < kr->num_syms; i++) {
+		uint64_t sym_addr = drgn_kallsyms_address(kr, i);
+		if (address < sym_addr) {
+			index = i - 1;
+			break;
+		}
+		offset += kr->names[offset] + 1;
+	}
+
+	if (index == -1)
+		return false;
+
+	drgn_symbol_from_kallsyms(kr, index, offset, ret);
+	return true;
 }
 
 struct drgn_error *drgn_kallsyms_init(struct drgn_program *prog,

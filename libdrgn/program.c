@@ -1649,9 +1649,9 @@ bool drgn_program_find_symbol_by_address_internal(struct drgn_program *prog,
 		if (prog->dbinfo) {
 			module = dwfl_addrmodule(prog->dbinfo->dwfl, address);
 			if (!module)
-				return false;
+				goto not_found;
 		} else {
-			return false;
+			goto not_found;
 		}
 	}
 
@@ -1660,9 +1660,14 @@ bool drgn_program_find_symbol_by_address_internal(struct drgn_program *prog,
 	const char *name = dwfl_module_addrinfo(module, address, &offset,
 						&elf_sym, NULL, NULL, NULL);
 	if (!name)
-		return false;
+		goto not_found;
 	drgn_symbol_from_elf(name, address - offset, &elf_sym, ret);
 	return true;
+
+not_found:
+	if (prog->kallsyms)
+		return drgn_kallsyms_lookup_address(prog->kallsyms, address, ret);
+	return false;
 }
 
 struct drgn_error *drgn_error_symbol_not_found(uint64_t address)
