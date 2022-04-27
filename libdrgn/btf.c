@@ -184,6 +184,28 @@ static uint32_t drgn_btf_lookup_def(struct drgn_prog_btf *bf, const char *name,
 	return 0; /* void anyway */
 }
 
+static uint32_t drgn_btf_lookup_enumval(struct drgn_prog_btf *bf, const char *name,
+					size_t name_len, uint32_t *enumerator_ret)
+{
+	struct btf_type *tp;
+	for (uint32_t i = 1; i < bf->index.size; i++) {
+		tp = bf->index.data[i];
+		if (btf_kind(tp->info) != BTF_KIND_ENUM)
+			continue;
+		struct btf_enum *enum_ = (struct btf_enum *)&tp[1];
+		size_t count = btf_vlen(tp->info);
+		for (uint32_t j = 0; j < count; j++) {
+			const char *enumerator_name = btf_str(bf, enum_[j].name_off);
+			if (strncmp(enumerator_name, name, name_len) == 0
+			    && !enumerator_name[name_len]) {
+				*enumerator_ret = j;
+				return i;
+			}
+		}
+	}
+	return 0;
+}
+
 /**
  * Follow the linked list of BTF qualifiers, combining them into a single
  * drgn_qualifiers, ending at the first non-qualifier type entry.
@@ -1013,38 +1035,64 @@ struct drgn_error *drgn_kallsyms_btf_finder(
 	struct drgn_program *prog = arg;
 	struct drgn_prog_btf *bf = prog->btf;
 	struct kallsyms_registry *kr = prog->kallsyms;
+	uint32_t type_id = 0;
+	struct drgn_qualified_type qualified_type;
+	struct btf_type *tp;
 
-	printf("BTF FINDER: %s\n", name);
+	if (flags == DRGN_FIND_OBJECT_CONSTANT)
+		goto check_enum;
 
-	uint32_t type_id = drgn_btf_lookup_def(bf, name, name_len);
-	printf(" -> type ID: %u\n", type_id);
+	/*
+	 * Search for variables or functions. These are of type VAR or FUNC in
+	 * the BTF, they will have a name and their "type" field will point to
+	 * the actual type of the var/func. We will find the corresponding
+	 * symbol's address and construct an object in that way.
+	 */
+	type_id = drgn_btf_lookup_def(bf, name, name_len);
 	if (!type_id)
-		return &drgn_not_found;
+		goto check_enum;
 
 	int symbol_idx = drgn_kallsyms_lookup(kr, name);
-	printf(" -> symbol index: %d\n", symbol_idx);
 	if (symbol_idx < 0)
-		return &drgn_not_found;
+		goto check_enum;
 	uint64_t symbol_address = drgn_kallsyms_address(kr, symbol_idx);
 
-	struct btf_type *tp = bf->index.data[type_id];
+	tp = bf->index.data[type_id];
 	int kind = btf_kind(tp->info);
 	if ((kind == BTF_KIND_VAR) && !(flags & DRGN_FIND_OBJECT_VARIABLE)) {
-		printf(" -> looking for variable, but not found variable\n");
-		return &drgn_not_found;
+		goto check_enum;
 	} else if ((kind == BTF_KIND_FUNC) && !(flags & DRGN_FIND_OBJECT_FUNCTION)) {
-		printf(" -> looking for function, but not found function\n");
-		return &drgn_not_found;
+		goto check_enum;
 	}
 
-	struct drgn_qualified_type qualified_type;
-	printf(" -> Create type_id %u\n", tp->type);
 	err = drgn_btf_type_create(bf, tp->type, &qualified_type);
 	if (err) {
-		printf(" -> Failed to create!\n");
 		return err;
 	}
 	return drgn_object_set_reference(ret, qualified_type, symbol_address, 0, 0);
+
+check_enum:
+	/*
+	 * Search for enumerators. These need a special search case because they
+	 * are held within the "btf_enum" struct inside of each BTF enum entry.
+	 * If we find a match, we can directly use the found type, and construct
+	 * a value object instead of a reference.
+	 */
+	if (flags & DRGN_FIND_OBJECT_CONSTANT) {
+		// First, we need to search for enumerators with this name.
+		uint32_t enumerator;
+		type_id = drgn_btf_lookup_enumval(bf, name, name_len, &enumerator);
+		if (type_id) {
+			printf("Found type_id=%u, enumerator=%u\n", type_id, enumerator);
+			tp = bf->index.data[type_id];
+			struct btf_enum *enum_ = (struct btf_enum *)&tp[1];
+			err = drgn_btf_type_create(bf, type_id, &qualified_type);
+			if (err)
+				return err;
+			return drgn_object_set_signed(ret, qualified_type, enum_[enumerator].val, 0);
+		}
+	}
+	return &drgn_not_found;
 }
 
 struct drgn_error *drgn_kallsyms_init(struct drgn_program *prog,
