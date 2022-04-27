@@ -156,9 +156,11 @@ static uint32_t drgn_btf_lookup(struct drgn_prog_btf *bf, const char *name,
 	for (uint32_t i = 1; i < bf->index.size; i++) {
 		tp = bf->index.data[i];
 		if (btf_kind(tp->info) == desired_btf_kind &&
-		    tp->name_off &&
-		    strncmp(btf_str(bf, tp->name_off), name, name_len+1) == 0) {
-			return i;
+		    tp->name_off) {
+			const char *bs = btf_str(bf, tp->name_off);
+			if (strncmp(btf_str(bf, tp->name_off), name, name_len) == 0
+			    && !bs[name_len])
+				return i;
 		}
 	}
 	return 0; /* void anyway */
@@ -172,9 +174,11 @@ static uint32_t drgn_btf_lookup_def(struct drgn_prog_btf *bf, const char *name,
 		tp = bf->index.data[i];
 		int kind = btf_kind(tp->info);
 		if ((kind == BTF_KIND_VAR || kind == BTF_KIND_FUNC) &&
-		    tp->name_off &&
-		    strncmp(btf_str(bf, tp->name_off), name, name_len+1) == 0) {
-			return i;
+		    tp->name_off) {
+			const char *bs = btf_str(bf, tp->name_off);
+			if (strncmp(btf_str(bf, tp->name_off), name, name_len) == 0
+			    && !bs[name_len])
+				return i;
 		}
 	}
 	return 0; /* void anyway */
