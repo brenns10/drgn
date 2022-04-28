@@ -1254,5 +1254,9 @@ drgn_program_load_internal_info(struct drgn_program *prog, struct vmcoreinfo *vi
 	err = drgn_kallsyms_load_btf(prog);
 	if (err)
 		return err;
-	return drgn_program_add_object_finder(prog, &drgn_kallsyms_btf_finder, prog);
+	err = drgn_program_add_object_finder(prog, &drgn_kallsyms_btf_finder, prog);
+	if (err)
+		return err;
+	printf("Loaded kallsyms and BTF data!\n");
+	return NULL;
 }
