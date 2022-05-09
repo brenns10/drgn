@@ -1168,8 +1168,10 @@ struct drgn_error *drgn_kallsyms_init(struct drgn_program *prog,
 	struct kallsyms_registry *kr;
 
 	if (!(vi->kallsyms_names && vi->kallsyms_token_table
-	      && vi->kallsyms_token_index && vi->kallsyms_num_syms))
+	      && vi->kallsyms_token_index && vi->kallsyms_num_syms)) {
+		printf("kallsyms: not enoguh information in vmcoreinfo to locate, continuing\n");
 		return NULL;
+	}
 
 	kr = calloc(1, sizeof(*kr));
 	if (!kr)
@@ -1252,7 +1254,7 @@ drgn_program_load_internal_info(struct drgn_program *prog, struct vmcoreinfo *vi
 	if (err)
 		return err;
 	err = drgn_kallsyms_load_btf(prog);
-	if (err)
+	if (err || !prog->kallsyms)
 		return err;
 	err = drgn_program_add_object_finder(prog, &drgn_kallsyms_btf_finder, prog);
 	if (err)
