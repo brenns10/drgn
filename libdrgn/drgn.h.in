@@ -2852,6 +2852,20 @@ struct drgn_error *drgn_stack_frame_symbol(struct drgn_stack_trace *trace,
 					   struct drgn_symbol **ret);
 
 /**
+ * Return a list of local variable names relevant to this stack frame.
+ *
+ * The array of names should be freed by the caller, but each individual name
+ * should not be freed.
+ *
+ * @param[out] count_ret Set to the number of variable names found
+ * @param[out] names_ret When @a count_ret is set non-zero, this is set to
+ * a non-@c NULL pointer to an array of names.
+ * @return @c NULL on success, non-@c NULL on error
+ */
+struct drgn_error *
+drgn_stack_frame_list_locals(struct drgn_stack_trace *trace, size_t frame_i,
+			     const char ***names_ret, size_t *count_ret);
+/**
  * Find an object in the scope of a stack frame.
  *
  * @param[in] name Object name.

@@ -94,6 +94,34 @@ static PyObject *StackFrame_str(StackFrame *self)
 	return ret;
 }
 
+static PyObject *StackFrame_locals(StackFrame *self)
+{
+	struct drgn_error *err;
+	const char **names;
+	size_t count;
+
+	err = drgn_stack_frame_list_locals(self->trace->trace, self->i,
+					   &names, &count);
+	if (err)
+		return set_drgn_error(err);
+	PyObject *list = PyList_New(count);
+	if (!list) {
+		free(names);
+		return NULL;
+	}
+	for (size_t i = 0; i < count; i++) {
+		PyObject *string = PyUnicode_FromString(names[i]);
+		if (!string) {
+			free(names);
+			Py_DECREF(list);
+			return NULL;
+		}
+		PyList_SET_ITEM(list, i, string);
+	}
+	free(names);
+	return list;
+}
+
 static DrgnObject *StackFrame_subscript(StackFrame *self, PyObject *key)
 {
 	struct drgn_error *err;
@@ -286,6 +314,8 @@ static PyMethodDef StackFrame_methods[] = {
 	 METH_O, drgn_StackFrame_register_DOC},
 	{"registers", (PyCFunction)StackFrame_registers,
 	 METH_NOARGS, drgn_StackFrame_registers_DOC},
+	{"locals", (PyCFunction)StackFrame_locals,
+	 METH_NOARGS, drgn_StackFrame_locals_DOC},
 	{},
 };
 
@@ -295,6 +325,7 @@ static PyGetSetDef StackFrame_getset[] = {
 	 drgn_StackFrame_is_inline_DOC},
 	{"interrupted", (getter)StackFrame_get_interrupted, NULL,
 	 drgn_StackFrame_interrupted_DOC},
+	{"pc", (getter)StackFrame_get_pc, NULL, drgn_StackFrame_pc_DOC},
 	{"pc", (getter)StackFrame_get_pc, NULL, drgn_StackFrame_pc_DOC},
 	{},
 };

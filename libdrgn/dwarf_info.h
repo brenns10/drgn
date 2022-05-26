@@ -233,6 +233,20 @@ struct drgn_error *drgn_find_die_ancestors(Dwarf_Die *die, Dwarf_Die **dies_ret,
 	__attribute__((__nonnull__(2, 3)));
 
 /**
+ * List the names of objects (variables or parameters) in local scope.
+ *
+ * The result returned in @a names_ret must be freed, but not the individual
+ * strings.
+ *
+ * @param[out] count_ret Set to the number of names returned
+ * @param[out] names_ret When @a count_ret is non-zero, set to a pointer to
+ * an array of @a count_ret names.
+ */
+struct drgn_error *drgn_list_local_names(Dwarf_Die *scopes,
+					 size_t num_scopes,
+					 const char ***names_ret,
+					 size_t *count_ret);
+/**
  * Find an object DIE in an array of DWARF scopes.
  *
  * @param[in] scopes Array of scopes, from outermost to innermost.

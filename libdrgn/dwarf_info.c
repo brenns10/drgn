@@ -5357,6 +5357,37 @@ static struct drgn_error *find_dwarf_enumerator(Dwarf_Die *enumeration_type,
 	return NULL;
 }
 
+struct drgn_error *drgn_list_local_names(Dwarf_Die *scopes,
+					 size_t num_scopes,
+					 const char ***names_ret,
+					 size_t *count_ret)
+{
+	Dwarf_Die die;
+	const char **names = NULL;
+	size_t count = 0;
+	size_t alloc = 0;
+	for (size_t scope = num_scopes; scope > 0; scope--) {
+		if (dwarf_child(&scopes[scope], &die) != 0)
+			continue;
+		do {
+			switch (dwarf_tag(&die)) {
+			case DW_TAG_variable:
+			case DW_TAG_formal_parameter:
+				if (count == alloc) {
+					alloc = max(alloc * 2, 16UL);
+					names = realloc(names, alloc * sizeof(char *));
+				}
+				names[count++] = dwarf_diename(&die);
+			default:
+				continue;
+			}
+		} while (dwarf_siblingof(&die, &die) == 0);
+	}
+	*count_ret = count;
+	*names_ret = names;
+	return NULL;
+}
+
 struct drgn_error *drgn_find_in_dwarf_scopes(Dwarf_Die *scopes,
 					     size_t num_scopes,
 					     const char *name,

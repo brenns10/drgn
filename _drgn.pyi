@@ -1738,6 +1738,13 @@ class StackFrame:
         dictionary with the register names as keys.
         """
         ...
+    def locals(self) -> List[str]:
+        """
+        Get a list of all local variable names in local scopes for this stack
+        frame. Not all names may have present values, but they can be used with
+        __getitem__() to check.
+        """
+        ...
 
 class Type:
     """

@@ -373,6 +373,22 @@ drgn_stack_frame_symbol(struct drgn_stack_trace *trace, size_t frame,
 }
 
 LIBDRGN_PUBLIC struct drgn_error *
+drgn_stack_frame_list_locals(struct drgn_stack_trace *trace, size_t frame_i,
+			     const char ***names_ret, size_t *count_ret)
+{
+	struct drgn_stack_frame *frame = &trace->frames[frame_i];
+
+	if (frame->function_scope >= frame->num_scopes) {
+		names_ret = NULL;
+		count_ret = 0;
+		return NULL;
+	}
+
+	return drgn_list_local_names(frame->scopes, frame->num_scopes,
+				     names_ret, count_ret);
+}
+
+LIBDRGN_PUBLIC struct drgn_error *
 drgn_stack_frame_find_object(struct drgn_stack_trace *trace, size_t frame_i,
 			     const char *name, struct drgn_object *ret)
 {
