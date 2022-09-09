@@ -4,6 +4,8 @@
 #ifndef DRGN_KERNEL_INFO_H
 #define DRGN_KERNEL_INFO_H
 
+#include <ctf-api.h>
+
 struct kallsyms_registry;
 struct drgn_program;
 
@@ -24,6 +26,7 @@ struct drgn_program;
  */
 struct kernel_info {
 	struct kallsyms_registry *kallsyms;
+	ctf_archive_t *ctf;
 };
 
 /**
@@ -34,6 +37,9 @@ struct kernel_info {
  * and load it.
  */
 struct drgn_error *drgn_program_load_kernel_info(struct drgn_program *prog);
+
+struct drgn_error *
+drgn_program_try_load_ctf(struct drgn_program *prog);
 
 /** @} */
 

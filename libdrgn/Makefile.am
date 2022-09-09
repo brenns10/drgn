@@ -40,6 +40,7 @@ libdrgnimpl_la_SOURCES = $(ARCH_DEFS:.defs=.c) \
 			 cfi.c \
 			 cfi.h \
 			 cityhash.h \
+			 ctf.c \
 			 debug_info.c \
 			 debug_info.h \
 			 dwarf_info.c \
@@ -101,7 +102,8 @@ libdrgnimpl_la_SOURCES = $(ARCH_DEFS:.defs=.c) \
 
 libdrgnimpl_la_CFLAGS = $(AM_CFLAGS) -fvisibility=hidden $(OPENMP_CFLAGS) \
 			$(elfutils_CFLAGS)
-libdrgnimpl_la_LIBADD = $(OPENMP_LIBS) $(elfutils_LIBS) -lm
+# TODO: properly detect and configure libctf
+libdrgnimpl_la_LIBADD = $(OPENMP_LIBS) $(elfutils_LIBS) -lm -lctf
 
 if WITH_LIBKDUMPFILE
 libdrgnimpl_la_SOURCES += kdump.c

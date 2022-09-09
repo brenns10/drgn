@@ -21,7 +21,9 @@ drgn_program_load_kernel_info(struct drgn_program *prog)
 
 	prog->kinfo = kinfo;
 	printf("Loaded symbols from kallsyms\n");
-	return NULL;
+
+	/* Try to load CTF */
+	return drgn_program_try_load_ctf(prog);
 
 out_free_kinfo:
 	free(kinfo);
