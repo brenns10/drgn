@@ -582,22 +582,98 @@ drgn_type_from_ctf(enum drgn_type_kind kind, const char *name,
 }
 
 struct drgn_error *
+drgn_ctf_find_object(const char *name, size_t name_len,
+		     const char *filename,
+		     enum drgn_find_object_flags flags, void *arg,
+		     struct drgn_object *ret)
+{
+	struct drgn_error *err = NULL;
+	struct drgn_program *prog = arg;
+	struct drgn_qualified_type qt;
+	ctf_archive_t *arc = prog->kinfo->ctf;
+	ctf_dict_t *dict;
+	ctf_id_t id;
+	struct drgn_symbol *sym = NULL;
+	int errnum;
+	char *name_copy;
+	uint64_t addr;
+
+	printf("drgn_ctf_find_object(\"%.*s\", \"%s\", %d, ...)\n",
+	       (int)name_len, name, filename, flags);
+
+	if (!filename)
+		filename = "vmlinux";
+
+	name_copy = strndup(name, name_len);
+
+	// TODO: we should open once per dict, per program. Currently leaks.
+	dict = ctf_dict_open(arc, filename, &errnum);
+	if (!dict) {
+		err = drgn_error_format(DRGN_ERROR_LOOKUP, "Could not find CTF dictionary \"%s\"", filename);
+		goto out_free;
+	}
+
+	err = drgn_program_find_symbol_by_name(prog, name, &sym);
+	if (err)
+		goto out_free;
+	addr = sym->address;
+	drgn_symbol_destroy(sym);
+	sym = NULL;
+
+	id = ctf_lookup_variable(dict, name_copy);
+	if (id == CTF_ERR) {
+		errnum = ctf_errno(dict);
+		if (errnum == ECTF_NOTYPEDAT)
+			err = drgn_error_create(DRGN_ERROR_LOOKUP, "not found");
+		else
+			err = drgn_error_ctf(ctf_errno(dict));
+		goto out_free;
+	}
+
+	err = drgn_type_from_ctf_id(prog, dict, id, &qt, NULL);
+	if (err)
+		goto out_free;
+
+	free(name_copy);
+	err = drgn_object_set_reference(ret, qt, addr, 0, 0);
+	if (err)
+		return err;
+	//printf("Successfully returning object, bit size %lu\n", ret->bit_size);
+	return NULL;
+
+out_free:
+	free(name_copy);
+	return err;
+}
+
+struct drgn_error *
 drgn_program_try_load_ctf(struct drgn_program *prog)
 {
+	struct drgn_error *err;
 	char *file = getenv("DRGN_CTF_FILE");
-	int err = 0;
+	int errnum = 0;
 	if (!file)
 		return NULL;
 
 	printf("Attempting to load CTF from %s\n", file);
 
-	prog->kinfo->ctf = ctf_open(file, NULL, &err);
+	prog->kinfo->ctf = ctf_open(file, NULL, &errnum);
 	if (!prog->kinfo->ctf) {
 		return drgn_error_format(DRGN_ERROR_OTHER, "Failed to load CTF data from \"%s\"", file);
 	}
 
-	drgn_program_add_type_finder(prog, drgn_type_from_ctf, prog);
+	err = drgn_program_add_type_finder(prog, drgn_type_from_ctf, prog);
+	if (err)
+		goto error;
+
+	err = drgn_program_add_object_finder(prog, drgn_ctf_find_object, prog);
+	if (err)
+		goto error; /* TODO: cleanup type finder? */
 
 	printf("Successfully loaded CTF\n");
 	return NULL;
+error:
+	ctf_close(prog->kinfo->ctf);
+	prog->kinfo->ctf = NULL;
+	return err;
 }
