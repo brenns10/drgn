@@ -330,7 +330,7 @@ static int compound_member_visit(const char *name, ctf_id_t membtype, unsigned l
 {
 	union drgn_lazy_object obj;
 	struct compound_member_visit_arg *arg = void_arg;
-	struct drgn_ctf_thunk_arg *thunk_arg = calloc(1, sizeof(*arg));
+	struct drgn_ctf_thunk_arg *thunk_arg = calloc(1, sizeof(*thunk_arg));
 	struct bit_field_info bfi;
 	ctf_id_t resolved;
 
