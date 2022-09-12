@@ -10,11 +10,15 @@
 #include "kernel_info.h"
 #include "type.h"
 
+struct bit_field_info {
+	unsigned long bit_offset;
+	uint64_t bit_field_size;
+};
 
 static struct drgn_error *
 drgn_type_from_ctf_id(struct drgn_program *prog, ctf_dict_t *dict,
                       ctf_id_t id, struct drgn_qualified_type *ret,
-                      unsigned long *offset);
+                      struct bit_field_info *bfi);
 
 static struct drgn_error *
 drgn_type_from_ctf(enum drgn_type_kind kind, const char *name,
@@ -29,20 +33,29 @@ static struct drgn_error *drgn_error_ctf(int err)
 static struct drgn_error *
 drgn_integer_from_ctf(struct drgn_program *prog, ctf_dict_t *dict,
                       ctf_id_t id, struct drgn_qualified_type *ret,
-                      unsigned long *offset)
+                      struct bit_field_info *bfi)
 {
 	ctf_encoding_t enc;
-	bool _signed, is_bool;
+	bool _signed, is_bool, has_bfi;
 	const char *name;
+	uint64_t size_bytes;
 	assert(ctf_type_encoding(dict, id, &enc) == 0);
 
-	if (enc.cte_offset && !offset)
+	has_bfi = enc.cte_offset || (enc.cte_bits & 0x7);
+	size_bytes = enc.cte_bits >> 3;
+
+	if (has_bfi && !bfi) {
 		return drgn_error_create(
 			DRGN_ERROR_OTHER,
-			"Unexpected integer with encoded offset"
+			"Integer with bitfield info outside compound type"
 		);
-	else if (enc.cte_offset)
-		*offset += enc.cte_offset;
+	} else if (has_bfi) {
+		bfi->bit_offset += enc.cte_offset;
+		bfi->bit_field_size = enc.cte_bits;
+		if (enc.cte_bits & 0x7) {
+			size_bytes = 1 << fls(size_bytes);
+		}
+	}
 
 	_signed = enc.cte_format & CTF_INT_SIGNED;
 	is_bool = enc.cte_format & CTF_INT_BOOL;
@@ -50,11 +63,11 @@ drgn_integer_from_ctf(struct drgn_program *prog, ctf_dict_t *dict,
 	if (enc.cte_bits == 0) {
 		ret->type = drgn_void_type(prog, &drgn_language_c);
 	} else if (is_bool) {
-		return drgn_bool_type_create(prog, name, enc.cte_bits,
+		return drgn_bool_type_create(prog, name, size_bytes,
 		                             DRGN_PROGRAM_ENDIAN,
 					     &drgn_language_c, &ret->type);
 	} else {
-		return drgn_int_type_create(prog, name, enc.cte_bits,
+		return drgn_int_type_create(prog, name, size_bytes,
 		                            _signed, DRGN_PROGRAM_ENDIAN,
 					    &drgn_language_c, &ret->type);
 	}
@@ -64,22 +77,31 @@ drgn_integer_from_ctf(struct drgn_program *prog, ctf_dict_t *dict,
 static struct drgn_error *
 drgn_float_from_ctf(struct drgn_program *prog, ctf_dict_t *dict,
                     ctf_id_t id, struct drgn_qualified_type *ret,
-                    unsigned long *offset)
+                    struct bit_field_info *bfi)
 {
 	ctf_encoding_t enc;
 	const char *name;
+	bool has_bfi;
+	size_t size_bytes;
 
 	assert(ctf_type_encoding(dict, id, &enc) == 0);
 	name = ctf_type_name_raw(dict, id);
 
-	if (enc.cte_offset && !offset)
+	has_bfi = enc.cte_offset || (enc.cte_bits & 0x7);
+	size_bytes = enc.cte_bits >> 3;
+	if (has_bfi && !bfi) {
 		return drgn_error_create(
 			DRGN_ERROR_OTHER,
-			"Unexpected float with encoded offset"
+			"Integer with bitfield info outside compound type"
 		);
-	else if (offset)
-		*offset += enc.cte_offset;
-
+	} else if (has_bfi) {
+		bfi->bit_offset += enc.cte_offset;
+		bfi->bit_field_size = enc.cte_bits;
+		if (enc.cte_bits & 0x7) {
+			/* Round up to the next power of two */
+			size_bytes = 1 << fls(size_bytes);
+		}
+	}
 	if (enc.cte_format != CTF_FP_DOUBLE && enc.cte_format != CTF_FP_SINGLE
 	    && enc.cte_format != CTF_FP_LDOUBLE)
 		return drgn_error_format(
@@ -88,7 +110,7 @@ drgn_float_from_ctf(struct drgn_program *prog, ctf_dict_t *dict,
 			enc.cte_format
 		);
 
-	return drgn_float_type_create(prog, name, enc.cte_bits >> 3, DRGN_PROGRAM_ENDIAN,
+	return drgn_float_type_create(prog, name, size_bytes, DRGN_PROGRAM_ENDIAN,
 	                              &drgn_language_c, &ret->type);
 }
 
@@ -208,7 +230,7 @@ struct drgn_ctf_thunk_arg {
 	struct drgn_program *prog;
 	ctf_dict_t *dict;
 	ctf_id_t id;
-	unsigned long *offset;
+	struct bit_field_info *bfi;
 };
 
 static struct drgn_error *drgn_ctf_thunk(struct drgn_object *res, void *void_arg)
@@ -220,9 +242,9 @@ static struct drgn_error *drgn_ctf_thunk(struct drgn_object *res, void *void_arg
 	if (res) {
 		//printf("thunk id %lu\n", arg->id);
 		err = drgn_type_from_ctf_id(arg->prog, arg->dict,
-		                            arg->id, &type, arg->offset);
+		                            arg->id, &type, arg->bfi);
 		if (!err)
-			err = drgn_object_set_absent(res, type, 0);
+			err = drgn_object_set_absent(res, type, arg->bfi ? arg->bfi->bit_field_size : 0);
 	} else {
 		//printf("thunk to free!\n");
 	}
@@ -309,6 +331,7 @@ static int compound_member_visit(const char *name, ctf_id_t membtype, unsigned l
 	union drgn_lazy_object obj;
 	struct compound_member_visit_arg *arg = void_arg;
 	struct drgn_ctf_thunk_arg *thunk_arg = calloc(1, sizeof(*arg));
+	struct bit_field_info bfi;
 	ctf_id_t resolved;
 
 	//printf("Compound member %s id %lu\n", name, membtype);
@@ -316,6 +339,9 @@ static int compound_member_visit(const char *name, ctf_id_t membtype, unsigned l
 	thunk_arg->prog = arg->prog;
 	thunk_arg->id = membtype;
 	drgn_lazy_object_init_thunk(&obj, arg->prog, drgn_ctf_thunk, thunk_arg);
+
+	bfi.bit_offset = 0;
+	bfi.bit_field_size = 0;
 
 	resolved = ctf_type_resolve(arg->dict, membtype);
 	if (resolved != CTF_ERR && (ctf_type_kind(arg->dict, resolved) == CTF_K_INTEGER ||
@@ -342,9 +368,9 @@ static int compound_member_visit(const char *name, ctf_id_t membtype, unsigned l
 		 */
 		ctf_encoding_t enc;
 		ctf_type_encoding(arg->dict, resolved, &enc);
-		if (enc.cte_offset) {
+		if (enc.cte_offset || enc.cte_bits & 0x7) {
 			//printf("Found member %s with offset %lu + %u\n", name, offset, enc.cte_offset);
-			thunk_arg->offset = &offset;
+			thunk_arg->bfi = &bfi;
 			arg->err = drgn_lazy_object_evaluate(&obj);
 			if (arg->err) {
 				drgn_lazy_object_deinit(&obj);
@@ -443,7 +469,8 @@ drgn_forward_from_ctf(struct drgn_program *prog, ctf_dict_t *dict,
 
 static struct drgn_error *
 drgn_type_from_ctf_id(struct drgn_program *prog, ctf_dict_t *dict,
-                      ctf_id_t id, struct drgn_qualified_type *ret, unsigned long *offset)
+                      ctf_id_t id, struct drgn_qualified_type *ret,
+		      struct bit_field_info *bfi)
 {
 	int ctf_kind;
 
@@ -456,9 +483,9 @@ again:
 	//printf("ID %lu Kind %d\n", id, ctf_kind);
 	switch (ctf_kind) {
 		case CTF_K_INTEGER:
-			return drgn_integer_from_ctf(prog, dict, id, ret, offset);
+			return drgn_integer_from_ctf(prog, dict, id, ret, bfi);
 		case CTF_K_FLOAT:
-			return drgn_float_from_ctf(prog, dict, id, ret, offset);
+			return drgn_float_from_ctf(prog, dict, id, ret, bfi);
 		case CTF_K_TYPEDEF:
 			return drgn_typedef_from_ctf(prog, dict, id, ret);
 		case CTF_K_POINTER:
