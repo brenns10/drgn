@@ -25,6 +25,29 @@ drgn_type_from_ctf(enum drgn_type_kind kind, const char *name,
 		   size_t name_len, const char *filename,
 		   void *arg, struct drgn_qualified_type *ret);
 
+static struct drgn_error *
+format_type_name(enum drgn_type_kind kind, const char *name, size_t name_len, char **ret)
+{
+	int rv;
+	switch (kind) {
+		case DRGN_TYPE_STRUCT:
+			rv = asprintf(ret, "struct %.*s", (int) name_len, name);
+			break;
+		case DRGN_TYPE_UNION:
+			rv = asprintf(ret, "union %.*s", (int) name_len, name);
+			break;
+		case DRGN_TYPE_ENUM:
+			rv = asprintf(ret, "enum %.*s", (int) name_len, name);
+			break;
+		default:
+			rv = asprintf(ret, "%.*s", (int) name_len, name);
+			break;
+	}
+	if (rv == -1)
+		return &drgn_enomem;
+	return NULL;
+}
+
 static struct drgn_error *drgn_error_ctf(int err)
 {
 	return drgn_error_format(DRGN_ERROR_OTHER, "Internal CTF error: %s", ctf_errmsg(errno));
@@ -450,11 +473,50 @@ drgn_forward_from_ctf(struct drgn_program *prog, ctf_dict_t *dict,
 {
 	int ctf_kind = ctf_type_kind_forwarded(dict, id);
 	const char *name = ctf_type_name_raw(dict, id);
+	char *name_copy;
+	ctf_id_t fwded_id;
+	enum drgn_type_kind kind;
+	struct drgn_error *err;
 
 	if (name && !*name)
 		name = NULL;
 
-	//printf("Forward %s\n", name);
+	switch (ctf_kind) {
+		case CTF_K_ENUM:
+			kind = DRGN_TYPE_ENUM;
+			break;
+		case CTF_K_STRUCT:
+			kind = DRGN_TYPE_STRUCT;
+			break;
+		case CTF_K_UNION:
+			kind = DRGN_TYPE_UNION;
+			break;
+		default:
+			return drgn_error_format(DRGN_ERROR_OTHER, "Forwarded CTF type id %lu, kind %d, is not enum, struct, or union", id, ctf_kind);
+	}
+
+	/*
+	 * This type ID may be a reference to a struct which is defined in the
+	 * child dictionary. This is possible when multiple structures have the
+	 * same name, but different definitions. To resolve this, lookup the
+	 * name in the current dictionary. This only works when the type has a
+	 * name, but really, how can you have an anonymous, forward declared
+	 * type?
+	 */
+	if (name) {
+		err = format_type_name(kind, name, strlen(name), &name_copy);
+		if (err)
+			return err;
+		fwded_id = ctf_lookup_by_name(dict, name_copy);
+		if (fwded_id != CTF_ERR)
+			id = fwded_id;
+	}
+
+	/*
+	 * Now, either we have found an underlying definition, or we still have
+	 * the forwarded type ID. Either way, we can construct the (maybe
+	 * absent) type from this ID.
+	 */
 	switch (ctf_kind) {
 		case CTF_K_ENUM:
 			return drgn_enum_from_ctf(prog, dict, id, ret);
@@ -517,29 +579,6 @@ again:
 		default:
 			return drgn_error_format(DRGN_ERROR_NOT_IMPLEMENTED, "CTF Type Kind %d is not implemented", ctf_kind);
 	}
-}
-
-static struct drgn_error *
-format_type_name(enum drgn_type_kind kind, const char *name, size_t name_len, char **ret)
-{
-	int rv;
-	switch (kind) {
-		case DRGN_TYPE_STRUCT:
-			rv = asprintf(ret, "struct %.*s", (int) name_len, name);
-			break;
-		case DRGN_TYPE_UNION:
-			rv = asprintf(ret, "union %.*s", (int) name_len, name);
-			break;
-		case DRGN_TYPE_ENUM:
-			rv = asprintf(ret, "enum %.*s", (int) name_len, name);
-			break;
-		default:
-			rv = asprintf(ret, "%.*s", (int) name_len, name);
-			break;
-	}
-	if (rv == -1)
-		return &drgn_enomem;
-	return NULL;
 }
 
 static struct drgn_error *
