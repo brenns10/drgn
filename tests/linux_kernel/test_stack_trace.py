@@ -5,6 +5,7 @@ import os
 import unittest
 
 from drgn import Object, Program
+from drgn.helpers.linux import bt
 from tests import assertReprPrettyEqualsStr
 from tests.linux_kernel import (
     LinuxKernelTestCase,
@@ -115,3 +116,8 @@ class TestStackTrace(LinuxKernelTestCase):
             assertReprPrettyEqualsStr(trace)
             for frame in trace:
                 assertReprPrettyEqualsStr(frame)
+
+    def test_init_smoke(self):
+        print("===== STACK TRACE [show_vars=True] =====")
+        bt.bt(self.prog.thread(1), show_vars=True)
+
