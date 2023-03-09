@@ -695,7 +695,13 @@ drgn_ctf_find_var(struct drgn_ctf_info *info, const char *name, ctf_dict_t *dict
 	id = ctf_lookup_variable(dict, name);
 	if (id == CTF_ERR) {
 		errnum = ctf_errno(dict);
-		if (errnum == ECTF_NEXT_END)
+		/*
+		 * Reading the libctf source code, there really shouldn't be any
+		 * case where ECTF_NEXT_END is returned here... but that's exactly
+		 * what I've observed. So handle both NOTYPEDAT and NEXT_END as
+		 * not found errors.
+		 */
+		if (errnum == ECTF_NOTYPEDAT || errnum == ECTF_NEXT_END)
 			err = &drgn_not_found;
 		else
 			err = drgn_error_ctf(errnum);
