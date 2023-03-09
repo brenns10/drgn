@@ -4,6 +4,7 @@
 #include "drgnpy.h"
 #include "../helpers.h"
 #include "../program.h"
+#include "../drgn_ctf.h"
 
 PyObject *drgnpy_linux_helper_direct_mapping_offset(PyObject *self, PyObject *arg)
 {
@@ -347,4 +348,32 @@ PyObject *drgnpy_linux_helper_pgtable_l5_enabled(PyObject *self, PyObject *args,
 	if (!(prog->prog.flags & DRGN_PROGRAM_IS_LINUX_KERNEL))
 		return PyErr_Format(PyExc_ValueError, "not Linux kernel");
 	Py_RETURN_BOOL(prog->prog.vmcoreinfo.pgtable_l5_enabled);
+}
+
+PyObject *drgnpy_linux_helper_load_ctf(PyObject *self, PyObject *args,
+				       PyObject *kwds)
+
+{
+#ifdef WITH_LIBCTF
+	static char *keywords[] = {"prog", "file", NULL};
+	Program *prog;
+	const char *file;
+	struct drgn_ctf_info *info;
+	if (!PyArg_ParseTupleAndKeywords(args, kwds, "O!s:pgtable_l5_enabled",
+					 keywords, &Program_type, &prog, &file))
+		return NULL;
+
+	struct drgn_error *err = drgn_program_load_ctf(&prog->prog, file, &info);
+	if (err) {
+		set_drgn_error(err);
+		return NULL;
+	}
+	/* NOTE: leaking the CTF info object */
+	return Py_None;
+#else
+	PyErr_SetString(PyExc_NotImplementedError,
+			"CTF support is not available, configure drgn with "
+			"--with-libctf to enable");
+	return NULL;
+#endif // WITH_LIBCTF
 }

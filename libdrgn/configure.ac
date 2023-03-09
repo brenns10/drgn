@@ -91,6 +91,20 @@ AS_CASE(["x$with_libkdumpfile"],
 AM_CONDITIONAL([WITH_LIBKDUMPFILE], [test "x$with_libkdumpfile" = xyes])
 AM_COND_IF([WITH_LIBKDUMPFILE], [AC_DEFINE(WITH_LIBKDUMPFILE)])
 
+dnl libctf does not ship with pkg-config scripts
+AC_ARG_WITH([libctf],
+            [AS_HELP_STRING([--with-libctf],
+                            [build with support for the compact type format (CTF)
+                             @<:@default=auto@:>@])],
+            [], [with_libctf=auto])
+AS_CASE(["x$with_libctf"],
+        [xyes], [LIBS += -lctf],
+        [xauto], [AC_SEARCH_LIBS(ctf_open, [ctf], [with_libctf=yes], [with_libctf=no])],
+        [])
+AM_CONDITIONAL([WITH_LIBCTF], [test "x$with_libctf" = xyes])
+AM_COND_IF([WITH_LIBCTF], [AC_DEFINE(WITH_LIBCTF)])
+AC_SUBST(LIBS)
+
 AC_ARG_ENABLE([compiler-warnings],
 	      [AS_HELP_STRING([--enable-compiler-warnings@<:@=no|yes|error@:>@],
 			      [enable compiler warnings. If no, then only the
