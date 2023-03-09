@@ -342,18 +342,18 @@ struct drgn_error *drgn_program_cache_prstatus_entry(struct drgn_program *prog,
 						     uint32_t *ret);
 
 /*
- * Like @ref drgn_program_find_symbol_by_address(), but @p ret is already
- * allocated, we may already know the module, and doesn't return a @ref
- * drgn_error.
+ * Like @ref drgn_program_find_symbol_by_address(), but does not return a lookup
+ * error if the symbol was not found.
  *
  * @param[in] module Module containing the address. May be @c NULL, in which
  * case this will look it up.
  * @return Whether the symbol was found.
  */
-bool drgn_program_find_symbol_by_address_internal(struct drgn_program *prog,
-						  uint64_t address,
-						  Dwfl_Module *module,
-						  struct drgn_symbol *ret);
+struct drgn_error *
+drgn_program_find_symbol_by_address_internal(struct drgn_program *prog,
+					     uint64_t address,
+					     struct drgn_module *module,
+					     struct drgn_symbol **ret);
 
 /*
  * Implementation of the Symbol finder API, based on ELF symbols

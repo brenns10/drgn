@@ -109,6 +109,7 @@ drgn_stack_trace_num_frames(struct drgn_stack_trace *trace)
 LIBDRGN_PUBLIC struct drgn_error *
 drgn_format_stack_trace(struct drgn_stack_trace *trace, char **ret)
 {
+	struct drgn_error *err = NULL;
 	struct string_builder str = STRING_BUILDER_INIT;
 	for (size_t frame = 0; frame < trace->num_frames; frame++) {
 		if (!string_builder_appendf(&str, "#%-2zu ", frame))
@@ -121,19 +122,19 @@ drgn_format_stack_trace(struct drgn_stack_trace *trace, char **ret)
 			if (!string_builder_append(&str, name))
 				goto enomem;
 		} else if ((pc = drgn_register_state_get_pc(regs)).has_value) {
-			Dwfl_Module *dwfl_module =
-				regs->module ? regs->module->dwfl_module : NULL;
-			struct drgn_symbol sym;
-			if (dwfl_module &&
-			    drgn_program_find_symbol_by_address_internal(trace->prog,
-									 pc.value - !regs->interrupted,
-									 dwfl_module,
-									 &sym)) {
+			_cleanup_symbol_ struct drgn_symbol *sym = NULL;
+			err = drgn_program_find_symbol_by_address_internal(trace->prog,
+									   pc.value - !regs->interrupted,
+									   regs->module, &sym);
+			if (err)
+				goto err;
+
+			if (sym) {
 				if (!string_builder_appendf(&str,
 							    "%s+0x%" PRIx64 "/0x%" PRIx64,
-							    sym.name,
-							    pc.value - sym.address,
-							    sym.size))
+							    sym->name,
+							    pc.value - sym->address,
+							    sym->size))
 					goto enomem;
 			} else {
 				if (!string_builder_appendf(&str, "0x%" PRIx64,
@@ -167,8 +168,10 @@ drgn_format_stack_trace(struct drgn_stack_trace *trace, char **ret)
 	return NULL;
 
 enomem:
+	err = &drgn_enomem;
+err:
 	free(str.str);
-	return &drgn_enomem;
+	return err;
 }
 
 LIBDRGN_PUBLIC struct drgn_error *
@@ -176,6 +179,7 @@ drgn_format_stack_frame(struct drgn_stack_trace *trace, size_t frame, char **ret
 {
 	struct string_builder str = STRING_BUILDER_INIT;
 	struct drgn_register_state *regs = trace->frames[frame].regs;
+	struct drgn_error *err = NULL;
 	if (!string_builder_appendf(&str, "#%zu at ", frame))
 		goto enomem;
 
@@ -184,18 +188,16 @@ drgn_format_stack_frame(struct drgn_stack_trace *trace, size_t frame, char **ret
 		if (!string_builder_appendf(&str, "%#" PRIx64, pc.value))
 			goto enomem;
 
-		Dwfl_Module *dwfl_module =
-			regs->module ? regs->module->dwfl_module : NULL;
-		struct drgn_symbol sym;
-		if (dwfl_module &&
-		    drgn_program_find_symbol_by_address_internal(trace->prog,
-								 pc.value - !regs->interrupted,
-								 dwfl_module,
-								 &sym) &&
-		    !string_builder_appendf(&str, " (%s+0x%" PRIx64 "/0x%" PRIx64 ")",
-					    sym.name, pc.value - sym.address,
-					    sym.size))
-				goto enomem;
+		_cleanup_symbol_ struct drgn_symbol *sym;
+		err = drgn_program_find_symbol_by_address_internal(trace->prog,
+								   pc.value - !regs->interrupted,
+								   regs->module, &sym);
+		if (err)
+			goto err;
+		if (sym && !string_builder_appendf(&str, " (%s+0x%" PRIx64 "/0x%" PRIx64 ")",
+						   sym->name, pc.value - sym->address,
+						   sym->size))
+			goto enomem;
 	} else {
 		if (!string_builder_append(&str, "???"))
 			goto enomem;
@@ -226,8 +228,10 @@ drgn_format_stack_frame(struct drgn_stack_trace *trace, size_t frame, char **ret
 	return NULL;
 
 enomem:
+	err = &drgn_enomem;
+err:
 	free(str.str);
-	return &drgn_enomem;
+	return err;
 }
 
 LIBDRGN_PUBLIC const char *drgn_stack_frame_name(struct drgn_stack_trace *trace,
@@ -374,17 +378,15 @@ drgn_stack_frame_symbol(struct drgn_stack_trace *trace, size_t frame,
 					 "program counter is not known at stack frame");
 	}
 	pc.value -= !regs->interrupted;
-	Dwfl_Module *dwfl_module =
-		regs->module ? regs->module->dwfl_module : NULL;
-	if (!dwfl_module)
-		return drgn_error_symbol_not_found(pc.value);
-	_cleanup_free_ struct drgn_symbol *sym = malloc(sizeof(*sym));
+	struct drgn_symbol *sym = NULL;
+	struct drgn_error *err;
+	err = drgn_program_find_symbol_by_address_internal(trace->prog, pc.value,
+							   regs->module, &sym);
+	if (err)
+		return err;
 	if (!sym)
-		return &drgn_enomem;
-	if (!drgn_program_find_symbol_by_address_internal(trace->prog, pc.value,
-							  dwfl_module, sym))
 		return drgn_error_symbol_not_found(pc.value);
-	*ret = no_cleanup_ptr(sym);
+	*ret = sym;
 	return NULL;
 }
 

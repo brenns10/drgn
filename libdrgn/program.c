@@ -2024,29 +2024,18 @@ drgn_program_find_symbol_by_address(struct drgn_program *prog, uint64_t address,
 	return err;
 }
 
-bool drgn_program_find_symbol_by_address_internal(struct drgn_program *prog,
-						  uint64_t address,
-						  Dwfl_Module *module,
-						  struct drgn_symbol *ret)
+struct drgn_error *
+drgn_program_find_symbol_by_address_internal(struct drgn_program *prog,
+					     uint64_t address,
+					     struct drgn_module *module,
+					     struct drgn_symbol **ret)
 {
-	if (!module) {
-		if (prog->dbinfo) {
-			module = dwfl_addrmodule(prog->dbinfo->dwfl, address);
-			if (!module)
-				return false;
-		} else {
-			return false;
-		}
-	}
-
-	GElf_Off offset;
-	GElf_Sym elf_sym;
-	const char *name = dwfl_module_addrinfo(module, address, &offset,
-						&elf_sym, NULL, NULL, NULL);
-	if (!name)
-		return false;
-	drgn_symbol_from_elf(name, address - offset, &elf_sym, ret);
-	return true;
+	struct drgn_symbol_result_builder result;
+	enum drgn_find_symbol_flags flags = DRGN_FIND_SYM_ADDR | DRGN_FIND_SYM_ONE;
+	struct drgn_error *err = drgn_program_symbols_search(prog, NULL, address, module, flags, &result);
+	if (!err)
+		*ret = drgn_symbol_result_builder_single(&result);
+	return err;
 }
 
 LIBDRGN_PUBLIC struct drgn_error *
