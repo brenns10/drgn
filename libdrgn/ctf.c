@@ -684,9 +684,67 @@ drgn_type_from_ctf(enum drgn_type_kind kind, const char *name,
 }
 
 struct drgn_error *
+drgn_ctf_find_object(const char *name, size_t name_len,
+		     const char *filename,
+		     enum drgn_find_object_flags flags, void *arg,
+		     struct drgn_object *ret)
+{
+	struct drgn_error *err = NULL;
+	struct drgn_qualified_type qt;
+	struct drgn_ctf_info *info = arg;
+	ctf_dict_t *dict;
+	ctf_id_t id;
+	struct drgn_symbol *sym = NULL;
+	int errnum;
+	char *name_copy;
+	uint64_t addr;
+
+	if (!filename)
+		filename = "vmlinux";
+
+	err = drgn_ctf_get_dict(info, filename, &dict);
+	if (err)
+		return err;
+
+	name_copy = strndup(name, name_len);
+	err = drgn_program_find_symbol_by_name(info->prog, name, &sym);
+	if (err)
+		goto out_free;
+	addr = sym->address;
+	drgn_symbol_destroy(sym);
+	sym = NULL;
+
+	id = ctf_lookup_variable(dict, name_copy);
+	if (id == CTF_ERR) {
+		errnum = ctf_errno(dict);
+		if (errnum == ECTF_NOTYPEDAT)
+			err = &drgn_not_found;
+		else
+			err = drgn_error_ctf(ctf_errno(dict));
+		goto out_free;
+	}
+
+	err = drgn_type_from_ctf_id(info, dict, id, &qt, NULL);
+	if (err)
+		goto out_free;
+
+	free(name_copy);
+	err = drgn_object_set_reference(ret, qt, addr, 0, 0);
+	if (err)
+		return err;
+	//printf("Successfully returning object, bit size %lu\n", ret->bit_size);
+	return NULL;
+
+out_free:
+	free(name_copy);
+	return err;
+}
+
+struct drgn_error *
 drgn_program_load_ctf(struct drgn_program *prog, const char *file, struct drgn_ctf_info **ret)
 {
-	int err = 0;
+	struct drgn_error *err;
+	int errnum = 0;
 	struct drgn_ctf_info *info = calloc(1, sizeof(*info));
 
 	if (!info)
@@ -694,15 +752,26 @@ drgn_program_load_ctf(struct drgn_program *prog, const char *file, struct drgn_c
 
 	info->prog = prog;
 	drgn_ctf_dicts_init(&info->dicts);
-	info->archive = ctf_open(file, NULL, &err);
+	info->archive = ctf_open(file, NULL, &errnum);
 	if (!info->archive) {
 		drgn_ctf_dicts_deinit(&info->dicts);
 		free(info);
-		return drgn_error_format(DRGN_ERROR_OTHER,
-					 "Failed to load CTF data from \"%s\"", file);
+		return drgn_error_format(DRGN_ERROR_OTHER, "ctf_open \"%s\": %s", file, ctf_errmsg(errnum));
 	}
 
 	*ret = info;
-	drgn_program_add_type_finder(prog, drgn_type_from_ctf, info);
+	err = drgn_program_add_type_finder(prog, drgn_type_from_ctf, info);
+	if (err)
+		goto error;
+
+	err = drgn_program_add_object_finder(prog, drgn_ctf_find_object, info);
+	if (err)
+		goto error; /* TODO: cleanup type finder? */
+
 	return NULL;
+error:
+	ctf_close(info->archive);
+	drgn_ctf_dicts_deinit(&info->dicts);
+	free(info);
+	return err;
 }
