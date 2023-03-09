@@ -11,6 +11,11 @@
 
 LIBDRGN_PUBLIC void drgn_symbol_destroy(struct drgn_symbol *sym)
 {
+	if (sym && sym->name_owned)
+		/* Cast here is necessary - we want symbol users to
+		 * never modify sym->name, but when we own the name,
+		 * we must modify it by freeing it. */
+		free((char *)sym->name);
 	free(sym);
 }
 
@@ -26,6 +31,7 @@ void drgn_symbol_from_elf(const char *name, uint64_t address,
 			  const GElf_Sym *elf_sym, struct drgn_symbol *ret)
 {
 	ret->name = name;
+	ret->name_owned = false;
 	ret->address = address;
 	ret->size = elf_sym->st_size;
 	int binding = GELF_ST_BIND(elf_sym->st_info);
