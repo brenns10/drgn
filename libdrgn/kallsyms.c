@@ -1,6 +1,7 @@
-// Copyright (c) 2022 Oracle and/or its affiliates
-// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2023 Oracle and/or its affiliates
+// SPDX-License-Identifier: LGPL-2.1-or-later
 
+#include <ctype.h>
 #include <stddef.h>
 
 #include "kallsyms.h"
@@ -39,6 +40,21 @@ struct kallsyms_reader {
 	char *token_table;
 	uint16_t *token_index;
 };
+
+/*
+ * We determine symbol length by the start of the subsequent symbol.
+ * Unfortunately, there can be large gaps in the symbol table, for instance the
+ * Linux kernel has percpu symbols near the beginning of the address space, and
+ * a large gap before normal kernel symbols. The result of this is that we can
+ * create symbols with incredibly large sizes, and then drgn's symbolization
+ * will print addresses using that symbol and a very large offset, which is
+ * absolutely meaningless.
+ *
+ * To avoid this, we set a cap on the length of a symbol. Unfortunately, this is
+ * a heuristic. It's entirely possible to have very large data symbols. This
+ * value is chosen somewhat arbitrarily, but seems to produce decent results.
+ */
+#define MAX_SYMBOL_LENGTH 0x10000
 
 /**
  * Copy the kallsyms names tables from the program into host memory.
@@ -261,6 +277,121 @@ kallsyms_address(struct kallsyms_finder *kr, unsigned int index)
 	return kr->addresses[index];
 }
 
+static void drgn_symbol_from_kallsyms(struct kallsyms_finder *kr, int index,
+				      struct drgn_symbol *ret)
+{
+	char kind = kr->types[index];
+	char kind_lower = tolower(kind);
+	ret->name = kr->symbols[index];
+	ret->address = kallsyms_address(kr, index);
+	if (index < kr->num_syms) {
+		size_t size = kallsyms_address(kr, index + 1) - ret->address;
+		if (size < MAX_SYMBOL_LENGTH)
+			ret->size = size;
+		else
+			ret->size = 0;
+	} else {
+		ret->size = 0;
+	}
+
+	ret->binding = DRGN_SYMBOL_BINDING_GLOBAL;
+	if (kind == 'u')
+		ret->binding = DRGN_SYMBOL_BINDING_UNIQUE;
+	else if (kind_lower == 'v' || kind_lower == 'w')
+		ret->binding = DRGN_SYMBOL_BINDING_WEAK;
+	else if (isupper(kind))
+		ret->binding = DRGN_SYMBOL_BINDING_GLOBAL;
+	else
+		/* If lowercase, the symbol is usually local, but it's
+		 * not guaranteed. Use unknown for safety here. */
+		ret->binding = DRGN_SYMBOL_BINDING_UNKNOWN;
+
+	switch (kind_lower) {
+	case 'b': /* bss */
+	case 'c': /* uninitialized data */
+	case 'd': /* initialized data */
+	case 'g': /* initialized data (small objects) */
+	case 'r': /* read-only data */
+		ret->kind = DRGN_SYMBOL_KIND_OBJECT;
+		break;
+	case 't': /* text */
+		ret->kind = DRGN_SYMBOL_KIND_FUNC;
+		break;
+	default:
+		ret->kind = DRGN_SYMBOL_KIND_UNKNOWN;
+	}
+	/* NOTE: The name field is owned by the kallsyms finder.
+	 * Once the kallsyms finder is bound to the program, it cannot be
+	 * unbound, and so it shares lifetime with the Program.
+	 */
+	ret->name_owned = false;
+}
+
+static int kallsyms_addr_compar(const void *key_void, const void *memb_void)
+{
+	const uint64_t *key = key_void;
+	const uint64_t *memb = memb_void;
+
+	/* We are guaranteed that: (min <= key <= max), so we can fearlessly
+	 * index one beyond memb, so long as we've checked that key > memb.
+	 */
+	if (*key == *memb)
+		return 0;
+	else if (*key < *memb)
+		return -1;
+	else if (*key < memb[1])
+		return 0;
+	else
+		return 1;
+}
+
+static inline struct drgn_error *
+add_result(struct kallsyms_finder *kr, struct drgn_symbol_result_builder *builder, int index)
+{
+	struct drgn_symbol *symbol = malloc(sizeof(*symbol));
+	if (!symbol)
+		return &drgn_enomem;
+	drgn_symbol_from_kallsyms(kr, index, symbol);
+	return drgn_symbol_result_builder_add(builder, symbol);
+}
+
+struct drgn_error *
+drgn_kallsyms_symbol_finder(const char *name, uint64_t address,
+			    struct drgn_module *module,
+			    enum drgn_find_symbol_flags flags, void *arg,
+			    struct drgn_symbol_result_builder *builder)
+{
+	struct kallsyms_finder *kr = arg;
+	uint64_t begin = kallsyms_address(kr, 0);
+	uint64_t end = kallsyms_address(kr, kr->num_syms - 1);
+
+	/* We assume the last symbol is "zero length" for simplicity.
+	 * Short-circuit the search when we're searching outside the address
+	 * range.
+	 */
+	if (flags & DRGN_FIND_SYM_ADDR) {
+		uint64_t *res;
+		if (address < begin || address > end)
+			return NULL;
+		res = bsearch(&address, kr->addresses, kr->num_syms, sizeof(address),
+			      kallsyms_addr_compar);
+		/* If the gap between symbols > MAX_SYMBOL_LENGTH, then we infer that
+		 * the symbol doesn't contain the address, so fail. */
+		if (!res || res[1] - res[0] > MAX_SYMBOL_LENGTH)
+			return NULL;
+		return add_result(kr, builder, res - kr->addresses);
+	} else {
+		bool check_name = flags & DRGN_FIND_SYM_NAME;
+		struct drgn_error *err;
+		for (int i = 0; i < kr->num_syms; i++)
+			if (!check_name || strcmp(kr->symbols[i], name) == 0)
+				if ((err = add_result(kr, builder, i))
+				    || (flags & DRGN_FIND_SYM_ONE))
+					return err;
+	}
+	return NULL;
+}
+
 /** Compute an address via the CONFIG_KALLSYMS_ABSOLUTE_PERCPU method*/
 static uint64_t absolute_percpu(uint64_t base, int32_t val)
 {
@@ -425,13 +556,12 @@ void drgn_kallsyms_destroy(struct kallsyms_finder *kr)
 		free(kr->symbol_buffer);
 		free(kr->symbols);
 		free(kr->types);
-		free(kr);
 	}
 }
 
-struct drgn_error *drgn_kallsyms_create(struct kallsyms_finder *kr,
-					struct drgn_program *prog,
-					struct kallsyms_locations *loc)
+struct drgn_error *drgn_kallsyms_init(struct kallsyms_finder *kr,
+				      struct drgn_program *prog,
+				      struct kallsyms_locations *loc)
 {
 	struct drgn_error *err;
 

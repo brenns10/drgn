@@ -70,6 +70,7 @@ Symbols
 .. drgndoc:: Symbol
 .. drgndoc:: SymbolBinding
 .. drgndoc:: SymbolKind
+.. drgndoc:: KallsymsFinder
 
 Stack Traces
 ------------

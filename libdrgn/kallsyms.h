@@ -1,5 +1,5 @@
-// Copyright (c) 2022 Oracle and/or its affiliates
-// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2023 Oracle and/or its affiliates
+// SPDX-License-Identifier: LGPL-2.1-or-later
 
 /**
  * @file
@@ -15,7 +15,10 @@
 #include <stdint.h>
 
 struct drgn_program;
+struct drgn_module;
 struct vmcoreinfo;
+enum drgn_find_symbol_flags;
+struct drgn_symbol_result_builder;
 
 struct kallsyms_locations {
 	uint64_t kallsyms_names;
@@ -73,6 +76,29 @@ struct kallsyms_finder {
 struct drgn_error *drgn_kallsyms_init(struct kallsyms_finder *reg,
 				      struct drgn_program *prog,
 				      struct kallsyms_locations *locations);
+
+/**
+ * Find a symbol using the symbol finder object
+ *
+ * This object may be passed to drgn_program_add_symbol_finder, along with a
+ * pointer to the struct kallsyms_finder, in order to find symbols in the
+ * vmlinux kallsyms.
+ */
+struct drgn_error *
+drgn_kallsyms_symbol_finder(const char *name, uint64_t address,
+			    struct drgn_module *module,
+			    enum drgn_find_symbol_flags flags, void *arg,
+			    struct drgn_symbol_result_builder *builder);
+
+/**
+ * Destroy kallsyms data
+ *
+ * Frees all resources held by the kallsyms finder. Please note that if the
+ * finder has been added to the program, then this *will* cause errors.
+ *
+ * @param kr Finder to destroy
+ */
+void drgn_kallsyms_destroy(struct kallsyms_finder *kr);
 
 /** @} */
 
