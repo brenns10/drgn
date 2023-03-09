@@ -684,60 +684,212 @@ drgn_type_from_ctf(enum drgn_type_kind kind, const char *name,
 }
 
 struct drgn_error *
+drgn_ctf_find_var(struct drgn_ctf_info *info, const char *name, ctf_dict_t *dict,
+		  uint64_t addr, struct drgn_object *ret)
+{
+	int errnum;
+	struct drgn_qualified_type qt = {0};
+	struct drgn_error *err;
+	ctf_id_t id;
+
+	id = ctf_lookup_variable(dict, name);
+	if (id == CTF_ERR) {
+		errnum = ctf_errno(dict);
+		if (errnum == ECTF_NEXT_END)
+			err = &drgn_not_found;
+		else
+			err = drgn_error_ctf(errnum);
+		return err;
+	}
+
+	err = drgn_type_from_ctf_id(info, dict, id, &qt, NULL);
+	if (err)
+		return err;
+
+	return drgn_object_set_reference(ret, qt, addr, 0, 0);
+}
+
+struct drgn_error *
+drgn_ctf_find_var_all_dicts(struct drgn_ctf_info *info, const char *name, uint64_t addr,
+			    struct drgn_object *ret)
+{
+	/* TODO: can we use some smarts here? The "vmlinux" dict gives us all
+	 * the types necessary to understand modules, and the drgn improved
+	 * module system (when ready) should hopefully be able to tell us which
+	 * module an address belongs to.
+	 */
+	struct drgn_ctf_dicts_iterator it;
+	struct drgn_error *err;
+	for (it = drgn_ctf_dicts_first(&info->dicts); it.entry; it = drgn_ctf_dicts_next(it)) {
+		err = drgn_ctf_find_var(info, name, it.entry->value, addr, ret);
+		if (!err || err != &drgn_not_found)
+			break;
+	}
+	return err;
+}
+
+static struct drgn_error *
+drgn_ctf_find_constant(struct drgn_ctf_info *info, const char *name, ctf_dict_t *dict,
+		       struct drgn_object *ret)
+{
+	struct drgn_ctf_enums_iterator it = drgn_ctf_enums_search(&info->enums, &name);
+	struct drgn_ctf_enumnode *node = it.entry ? &it.entry->value : NULL;
+	struct drgn_error *err;
+
+	for (; node; node = node->next) {
+		if (dict && node->dict != dict)
+			continue;
+		/* A match! Construct an object. */
+		struct drgn_qualified_type qt = {0};
+		err = drgn_enum_from_ctf(info, node->dict, node->id, &qt);
+		if (err)
+			return err;
+		return drgn_object_set_signed(ret, qt, node->val, 0);
+	}
+	return &drgn_not_found;
+}
+
+static struct drgn_error *
 drgn_ctf_find_object(const char *name, size_t name_len,
 		     const char *filename,
 		     enum drgn_find_object_flags flags, void *arg,
 		     struct drgn_object *ret)
 {
 	struct drgn_error *err = NULL;
-	struct drgn_qualified_type qt;
 	struct drgn_ctf_info *info = arg;
-	ctf_dict_t *dict;
-	ctf_id_t id;
-	struct drgn_symbol *sym = NULL;
-	int errnum;
+	ctf_dict_t *dict = NULL;
 	char *name_copy;
-	uint64_t addr;
 
-	if (!filename)
-		filename = "vmlinux";
-
-	err = drgn_ctf_get_dict(info, filename, &dict);
-	if (err)
-		return err;
-
+	/*
+	 * When given a filename, interpret it as a kernel module and use it as
+	 * the CTF dictionary name to search. Otherwise, we'll need to search
+	 * all of them.
+	 * TODO: it may be better to have some way to specify a "default" CTF
+	 * dictionary. When filename is not provided, we would search that dict
+	 * first, and failing that, we'd search the others.
+	 */
 	name_copy = strndup(name, name_len);
-	err = drgn_program_find_symbol_by_name(info->prog, name, &sym);
-	if (err)
-		goto out_free;
-	addr = sym->address;
-	drgn_symbol_destroy(sym);
-	sym = NULL;
-
-	id = ctf_lookup_variable(dict, name_copy);
-	if (id == CTF_ERR) {
-		errnum = ctf_errno(dict);
-		if (errnum == ECTF_NOTYPEDAT)
-			err = &drgn_not_found;
-		else
-			err = drgn_error_ctf(ctf_errno(dict));
-		goto out_free;
+	if (filename) {
+		err = drgn_ctf_get_dict(info, filename, &dict);
+		if (err)
+			goto out_free;
 	}
 
-	err = drgn_type_from_ctf_id(info, dict, id, &qt, NULL);
-	if (err)
-		goto out_free;
-
-	free(name_copy);
-	err = drgn_object_set_reference(ret, qt, addr, 0, 0);
-	if (err)
-		return err;
-	//printf("Successfully returning object, bit size %lu\n", ret->bit_size);
-	return NULL;
-
+	if (flags & DRGN_FIND_OBJECT_CONSTANT) {
+		err = drgn_ctf_find_constant(info, name_copy, NULL, ret);
+		if (!err || err != &drgn_not_found)
+			goto out_free;
+	}
+	if (flags & DRGN_FIND_OBJECT_VARIABLE) {
+		uint64_t addr;
+		struct drgn_symbol *sym = NULL;
+		err = drgn_program_find_symbol_by_name(info->prog, name, &sym);
+		if (err)
+			return err;
+		addr = sym->address;
+		drgn_symbol_destroy(sym);
+		if (dict) {
+			err = drgn_ctf_find_var(info, name_copy, dict, addr, ret);
+			if (!err || err != &drgn_not_found)
+				goto out_free;
+		} else {
+			err = drgn_ctf_find_var_all_dicts(info, name_copy, addr, ret);
+			if( !err || err != &drgn_not_found )
+				goto out_free;
+		}
+	}
+	err = &drgn_not_found;
 out_free:
 	free(name_copy);
 	return err;
+}
+
+struct drgn_ctf_arg {
+	struct drgn_ctf_info *info;
+	ctf_dict_t *dict;
+	const char *dict_name;
+	ctf_id_t type;
+	struct drgn_error *err;
+	unsigned long count;
+};
+
+static int process_enumerator(const char *name, int val, void *void_arg)
+{
+	struct drgn_ctf_arg *arg = void_arg;
+	struct drgn_ctf_enums_iterator it;
+	struct drgn_ctf_enums_entry entry;
+	struct hash_pair hp;
+
+	hp = drgn_ctf_enums_hash(&name);
+	it = drgn_ctf_enums_search_hashed(&arg->info->enums, &name, hp);
+	if (it.entry) {
+		/* Insert at the head of the list, which means allocating a node
+		 * for the current head to reside at. */
+		struct drgn_ctf_enumnode *node = calloc(1, sizeof(*node));
+		if (!node) {
+			arg->err = &drgn_enomem;
+			return -1;
+		}
+		*node = it.entry->value;
+		it.entry->value.dict = arg->dict;
+		it.entry->value.id = arg->type;
+		it.entry->value.val = val;
+		it.entry->value.next = node;
+	} else {
+		entry.key = name;
+		entry.value.dict = arg->dict;
+		entry.value.id = arg->type;
+		entry.value.val = val;
+		entry.value.next = NULL;
+		if (drgn_ctf_enums_insert_searched(&arg->info->enums, &entry, hp, NULL) < 0) {
+			arg->err = &drgn_enomem;
+			return -1;
+		}
+	}
+	arg->count++;
+	return 0;
+}
+
+static int process_type(ctf_id_t type, void *void_arg)
+{
+	struct drgn_ctf_arg *arg = void_arg;
+	if (ctf_type_kind(arg->dict, type) != CTF_K_ENUM)
+		return 0;
+
+	arg->type = type;
+	int ret = ctf_enum_iter(arg->dict, type, process_enumerator, void_arg);
+	/* For CTF errors, set a drgn error immediately */
+	if (ret != 0 && !arg->err)
+		arg->err = drgn_error_ctf(ctf_errno(arg->dict));
+
+	arg->type = 0;
+	return ret;
+}
+
+static int process_dict(ctf_dict_t *unused, const char *name, void *void_arg)
+{
+	struct drgn_ctf_arg *arg = void_arg;
+	ctf_dict_t *dict;
+
+	/* The CTF archive iterator will close the dict handle it gives us once
+	 * we return. So ignore the argument and open a new handle which we will
+	 * cache. */
+	arg->err = drgn_ctf_get_dict(arg->info, name, &dict);
+	if (arg->err)
+		return -1;
+
+	arg->dict = dict;
+	arg->dict_name = name;
+
+	int ret = ctf_type_iter(dict, process_type, void_arg);
+	/* For CTF errors, set a drgn error immediately */
+	if (ret != 0 && !arg->err)
+		arg->err = drgn_error_ctf(ctf_errno(dict));
+
+	arg->dict = NULL;
+	arg->dict_name = NULL;
+
+	return ret;
 }
 
 struct drgn_error *
@@ -752,11 +904,26 @@ drgn_program_load_ctf(struct drgn_program *prog, const char *file, struct drgn_c
 
 	info->prog = prog;
 	drgn_ctf_dicts_init(&info->dicts);
+	drgn_ctf_enums_init(&info->enums);
 	info->archive = ctf_open(file, NULL, &errnum);
 	if (!info->archive) {
 		drgn_ctf_dicts_deinit(&info->dicts);
 		free(info);
 		return drgn_error_format(DRGN_ERROR_OTHER, "ctf_open \"%s\": %s", file, ctf_errmsg(errnum));
+	}
+
+	/* While CTF offers efficient type lookup by name in most cases,
+	 * enumerator names are a glaring omission here. We'd prefer to avoid
+	 * a linear search of each dict, type, and enumerator for every constant
+	 * lookup, which means that we'll need an index. */
+	struct drgn_ctf_arg arg = {0};
+	arg.info = info;
+	errnum = ctf_archive_iter(info->archive, process_dict, &arg);
+	if (errnum != 0) {
+		if (!arg.err)
+			arg.err = drgn_error_ctf(errnum);
+		err = arg.err;
+		goto error;
 	}
 
 	*ret = info;
@@ -771,6 +938,7 @@ drgn_program_load_ctf(struct drgn_program *prog, const char *file, struct drgn_c
 	return NULL;
 error:
 	ctf_close(info->archive);
+	drgn_ctf_enums_deinit(&info->enums);
 	drgn_ctf_dicts_deinit(&info->dicts);
 	free(info);
 	return err;

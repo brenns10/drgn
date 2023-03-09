@@ -14,6 +14,16 @@
 
 #include "hash_table.h"
 
+struct drgn_ctf_enumnode {
+	ctf_dict_t *dict;
+	ctf_id_t id;
+	int64_t val;
+	struct drgn_ctf_enumnode *next;
+};
+
+DEFINE_HASH_MAP(drgn_ctf_enums, const char *, struct drgn_ctf_enumnode,
+		c_string_key_hash_pair, c_string_key_eq);
+
 DEFINE_HASH_MAP(drgn_ctf_dicts, const char *, ctf_dict_t *,
 		c_string_key_hash_pair, c_string_key_eq);
 
@@ -21,6 +31,7 @@ struct drgn_ctf_info {
 	struct drgn_program *prog;
 	ctf_archive_t *archive;
 	struct drgn_ctf_dicts dicts;
+	struct drgn_ctf_enums enums;
 };
 
 struct drgn_error *
