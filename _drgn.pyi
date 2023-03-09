@@ -2521,3 +2521,7 @@ def _linux_helper_kaslr_offset(prog: Program) -> int:
 def _linux_helper_pgtable_l5_enabled(prog: Program) -> bool:
     """Return whether 5-level paging is enabled."""
     ...
+
+def _linux_helper_load_ctf(prog: Program, filename: str) -> None:
+    """Try to load a CTF file and use it for type information."""
+    ...
