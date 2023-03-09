@@ -46,6 +46,24 @@ void drgn_symbol_from_elf(const char *name, uint64_t address,
 		ret->kind = DRGN_SYMBOL_KIND_UNKNOWN;
 }
 
+struct drgn_error *
+drgn_symbol_copy(struct drgn_symbol *dst, struct drgn_symbol *src)
+{
+	if (src->name_owned) {
+		dst->name = strdup(src->name);
+		if (!dst->name)
+			return &drgn_enomem;
+	} else {
+		dst->name = src->name;
+	}
+	dst->name_owned = src->name_owned;
+	dst->address = src->address;
+	dst->size = src->size;
+	dst->kind = src->kind;
+	dst->binding = src->binding;
+	return NULL;
+}
+
 LIBDRGN_PUBLIC const char *drgn_symbol_name(struct drgn_symbol *sym)
 {
 	return sym->name;

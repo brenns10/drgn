@@ -453,6 +453,38 @@ class Program:
             return an :class:`Object` or ``None`` if not found.
         """
         ...
+    def add_symbol_finder(
+        self, fn: Callable[[Optional[str], Optional[int], bool], List[Symbol]]
+    ) -> None:
+        """
+        Register a callback for finding symbols in the program.
+
+        The callback should take three arguments: a search name, a search
+        address, and a boolean flag indicating whether to return the first
+        match. When the flag is True, the callback should return just one
+        :class:`Symbol`. When the flag is False, the callback should return a
+        list of all matching :class:`Symbol`\\ s. Both the name and address
+        arguments are optional. If both are provided, then the result(s) should
+        match both. If neither are provided the finder should return all
+        available symbols.
+
+        Callbacks are called in reverse order of the order they were added. When
+        the boolean flag is set, the search will short-circuit after the first
+        finder returns a result. Otherwise, all callbacks will be called, and
+        all results will be returned.
+
+        .. note::
+
+            There is one case where callback order is not respected: drgn's
+            internal symbol resolution. If drgn has debuginfo already loaded for
+            a particular memory address, it will take a shortcut and directly
+            use the built-in ELF symbol finder first. If this fails, it will
+            continue to call each callback in the order described.
+
+        :param fn: Callable taking address, name, and flag, and returning a list
+            of :class:`Symbol`\\ s.
+        """
+        ...
     def set_core_dump(self, path: Path) -> None:
         """
         Set the program to a core dump.
