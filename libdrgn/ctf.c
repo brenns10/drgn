@@ -7,6 +7,7 @@
 #include <ctf.h>
 #include <ctf-api.h>
 
+#include "drgn.h"
 #include "drgn_ctf.h"
 #include "lazy_object.h"
 #include "program.h"
@@ -648,38 +649,95 @@ out:
 }
 
 static struct drgn_error *
+drgn_ctf_lookup_by_name(ctf_dict_t *dict, const char *name, ctf_id_t *id_ret,
+			ctf_dict_t **dict_ret)
+{
+	ctf_id_t id = ctf_lookup_by_name(dict, name);
+	int err = ctf_errno(dict);
+	if (id == CTF_ERR && err == ECTF_NOTYPE) {
+		return &drgn_not_found;
+	} else if (id == CTF_ERR) {
+		return drgn_error_ctf(ctf_errno(dict));
+	} else {
+		*id_ret = id;
+		*dict_ret = dict;
+		return NULL;
+	}
+}
+
+static struct drgn_error *
+drgn_ctf_find_type_name_all_dicts(struct drgn_ctf_info *info, const char *name,
+				  ctf_id_t *id_ret, ctf_dict_t **dict_ret)
+{
+	struct drgn_error *err;
+
+	/*
+	 * First, if there's a vmlinux dict, that should have priority over
+	 * module type information.
+	 */
+	if (info->vmlinux) {
+		err = drgn_ctf_lookup_by_name(info->vmlinux, name, id_ret, dict_ret);
+		if (err != &drgn_not_found)
+			return err;
+	}
+
+	/*
+	 * Finally, we search the remaining dicts, which correspond to each
+	 * module. There's not actually any guarantee that every module/dict in
+	 * the CTF is actually loaded by the program, so it's possible that this
+	 * could return a false positive.
+	 */
+	struct drgn_ctf_dicts_iterator it;
+	for (it = drgn_ctf_dicts_first(&info->dicts); it.entry; it = drgn_ctf_dicts_next(it)) {
+		ctf_dict_t *dict = it.entry->value;
+		/* Don't re-do search */
+		if (dict == info->root || dict == info->vmlinux)
+			continue;
+		err = drgn_ctf_lookup_by_name(dict, name, id_ret, dict_ret);
+		if (err != &drgn_not_found)
+			return err;
+	}
+	return &drgn_not_found;
+}
+
+static struct drgn_error *
 drgn_type_from_ctf(enum drgn_type_kind kind, const char *name,
 		   size_t name_len, const char *filename,
 		   void *arg, struct drgn_qualified_type *ret)
 {
 	char *name_copy;
-	ctf_dict_t *dict;
+	ctf_dict_t *dict = NULL;
 	ctf_id_t id;
 	struct drgn_ctf_info *info = arg;
-	int errnum;
-	struct drgn_error *err;
+	struct drgn_error *err = NULL;
 
-	if (!filename)
-		filename = "vmlinux";
-
-	err = drgn_ctf_get_dict(info, filename, &dict);
-	if (err) {
-		return err;
+	/*
+	 * When filename is provided, we can resolve to a CTF dictionary.
+	 * Otherwise, we need to search for it in all dicts.
+	 */
+	if (filename) {
+		err = drgn_ctf_get_dict(info, filename, &dict);
+		if (err)
+			return err;
 	}
 
-	//printf("drgn_type_from_ctf(%d, \"%.*s\", \"%s\")\n", kind, (int)name_len, name, filename);
 	err = format_type_name(kind, name, name_len, &name_copy);
 	if (err)
 		return err;
 
-	id = ctf_lookup_by_name(dict, name_copy);
+	if (dict) {
+		id = ctf_lookup_by_name(dict, name_copy);
+		int errnum = ctf_errno(dict);
+		if (id == CTF_ERR && errnum == ECTF_NOTYPE)
+			err = &drgn_not_found;
+		else if (id == CTF_ERR)
+			err = drgn_error_ctf(errnum);
+	} else {
+		err = drgn_ctf_find_type_name_all_dicts(info, name_copy, &id, &dict);
+	}
 	free(name_copy);
-
-	errnum = ctf_errno(dict);
-	if (id == CTF_ERR && errnum == ECTF_NOTYPE)
-		return &drgn_not_found;
-	else if (id == CTF_ERR)
-		return drgn_error_ctf(errnum);
+	if (err)
+		return err;
 	return drgn_type_from_ctf_id(info, dict, id, ret, NULL);
 }
 
@@ -701,7 +759,8 @@ drgn_ctf_find_var(struct drgn_ctf_info *info, const char *name, ctf_dict_t *dict
 		 * what I've observed. So handle both NOTYPEDAT and NEXT_END as
 		 * not found errors.
 		 */
-		if (errnum == ECTF_NOTYPEDAT || errnum == ECTF_NEXT_END)
+		if (errnum == ECTF_NOTYPEDAT || errnum == ECTF_NEXT_END
+		    || errnum == ECTF_NOTYPE)
 			err = &drgn_not_found;
 		else
 			err = drgn_error_ctf(errnum);
@@ -884,6 +943,11 @@ static int process_dict(ctf_dict_t *unused, const char *name, void *void_arg)
 	if (arg->err)
 		return -1;
 
+	if (!ctf_parent_name(dict))
+		arg->info->root = dict;
+	if (strcmp(name, "vmlinux") == 0)
+		arg->info->vmlinux = dict;
+
 	arg->dict = dict;
 	arg->dict_name = name;
 
@@ -929,6 +993,13 @@ drgn_program_load_ctf(struct drgn_program *prog, const char *file, struct drgn_c
 		if (!arg.err)
 			arg.err = drgn_error_ctf(errnum);
 		err = arg.err;
+		goto error;
+	}
+	if (!info->root || !info->vmlinux) {
+		err = drgn_error_format(DRGN_ERROR_OTHER,
+					"CTF is missing dictionaries for: %s %s",
+					info->root ? "" : "shared_ctf (root dict)",
+					info->vmlinux ? "" : "vmlinux");
 		goto error;
 	}
 

@@ -32,6 +32,8 @@ struct drgn_ctf_info {
 	ctf_archive_t *archive;
 	struct drgn_ctf_dicts dicts;
 	struct drgn_ctf_enums enums;
+	ctf_dict_t *root;
+	ctf_dict_t *vmlinux;
 };
 
 struct drgn_error *
