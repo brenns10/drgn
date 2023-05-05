@@ -13,15 +13,10 @@
 #include "program.h"
 #include "type.h"
 
-struct bit_field_info {
-	unsigned long bit_offset;
-	uint64_t bit_field_size;
-};
-
 static struct drgn_error *
 drgn_type_from_ctf_id(struct drgn_ctf_info *info, ctf_dict_t *dict,
                       ctf_id_t id, struct drgn_qualified_type *ret,
-                      struct bit_field_info *bfi);
+                      bool in_bitfield);
 
 static struct drgn_error *
 drgn_type_from_ctf(enum drgn_type_kind kind, const char *name,
@@ -59,28 +54,27 @@ static struct drgn_error *drgn_error_ctf(int err)
 static struct drgn_error *
 drgn_integer_from_ctf(struct drgn_ctf_info *info, ctf_dict_t *dict,
                       ctf_id_t id, struct drgn_qualified_type *ret,
-                      struct bit_field_info *bfi)
+                      bool in_bitfield)
 {
 	ctf_encoding_t enc;
-	bool _signed, is_bool, has_bfi;
+	bool _signed, is_bool, type_in_bitfield;
 	const char *name;
-	uint64_t size_bytes;
+	uint64_t size_bytes = ctf_type_size(dict, id);
 	assert(ctf_type_encoding(dict, id, &enc) == 0);
 
-	has_bfi = enc.cte_offset || (enc.cte_bits & 0x7);
-	size_bytes = enc.cte_bits >> 3;
+	type_in_bitfield = enc.cte_offset || (enc.cte_bits != size_bytes * 8);
 
-	if (has_bfi && !bfi) {
-		return drgn_error_create(
-			DRGN_ERROR_OTHER,
-			"Integer with bitfield info outside compound type"
-		);
-	} else if (has_bfi) {
-		bfi->bit_offset += enc.cte_offset;
-		bfi->bit_field_size = enc.cte_bits;
-		if (enc.cte_bits & 0x7) {
-			size_bytes = 1 << fls(size_bytes);
-		}
+	if (type_in_bitfield) {
+		if (!in_bitfield)
+			return drgn_error_create(
+				DRGN_ERROR_OTHER,
+				"Integer with bitfield info outside compound type"
+			);
+		if (size_bytes * 8 < enc.cte_bits)
+			return drgn_error_create(
+				DRGN_ERROR_OTHER,
+				"Integer whose bitfield size is greater than byte size"
+			);
 	}
 
 	_signed = enc.cte_format & CTF_INT_SIGNED;
@@ -103,30 +97,28 @@ drgn_integer_from_ctf(struct drgn_ctf_info *info, ctf_dict_t *dict,
 static struct drgn_error *
 drgn_float_from_ctf(struct drgn_ctf_info *info, ctf_dict_t *dict,
                     ctf_id_t id, struct drgn_qualified_type *ret,
-                    struct bit_field_info *bfi)
+                    bool in_bitfield)
 {
 	ctf_encoding_t enc;
 	const char *name;
-	bool has_bfi;
-	size_t size_bytes;
+	bool type_in_bitfield;
+	size_t size_bytes = ctf_type_size(dict, id);
 
 	assert(ctf_type_encoding(dict, id, &enc) == 0);
 	name = ctf_type_name_raw(dict, id);
 
-	has_bfi = enc.cte_offset || (enc.cte_bits & 0x7);
-	size_bytes = enc.cte_bits >> 3;
-	if (has_bfi && !bfi) {
-		return drgn_error_create(
-			DRGN_ERROR_OTHER,
-			"Integer with bitfield info outside compound type"
-		);
-	} else if (has_bfi) {
-		bfi->bit_offset += enc.cte_offset;
-		bfi->bit_field_size = enc.cte_bits;
-		if (enc.cte_bits & 0x7) {
-			/* Round up to the next power of two */
-			size_bytes = 1 << fls(size_bytes);
-		}
+	type_in_bitfield = enc.cte_offset || (enc.cte_bits != size_bytes * 8);
+	if (type_in_bitfield) {
+		if (!in_bitfield)
+			return drgn_error_create(
+				DRGN_ERROR_OTHER,
+				"Float with bitfield info outside compound type"
+			);
+		if (size_bytes * 8 < enc.cte_bits)
+			return drgn_error_create(
+				DRGN_ERROR_OTHER,
+				"Float whose bitfield size is greater than byte size"
+			);
 	}
 	if (enc.cte_format != CTF_FP_DOUBLE && enc.cte_format != CTF_FP_SINGLE
 	    && enc.cte_format != CTF_FP_LDOUBLE)
@@ -143,7 +135,8 @@ drgn_float_from_ctf(struct drgn_ctf_info *info, ctf_dict_t *dict,
 
 static struct drgn_error *
 drgn_typedef_from_ctf(struct drgn_ctf_info *info, ctf_dict_t *dict,
-                      ctf_id_t id, struct drgn_qualified_type *ret)
+                      ctf_id_t id, struct drgn_qualified_type *ret,
+		      bool in_bitfield)
 {
 	struct drgn_qualified_type aliased;
 	struct drgn_error *err;
@@ -152,8 +145,19 @@ drgn_typedef_from_ctf(struct drgn_ctf_info *info, ctf_dict_t *dict,
 
 	name = ctf_type_name_raw(dict, id);
 	aliased_id = ctf_type_reference(dict, id);
+	if (!name || !name[0]) {
+		/*
+		 * An empty raw name field is wrong: typedefs must have
+		 * a name, that's their reason to exist.
+		 * This is an indicator that this is not really a typedef, it's
+		 * a SLICE posing as a typdef. Re-grab the name and ID based on
+		 * that assumption.
+		 */
+		name = ctf_type_name_raw(dict, aliased_id);
+		aliased_id = ctf_type_reference(dict, aliased_id);
+	}
 
-	err = drgn_type_from_ctf_id(info, dict, aliased_id, &aliased, NULL);
+	err = drgn_type_from_ctf_id(info, dict, aliased_id, &aliased, in_bitfield);
 	if (err)
 		return err;
 
@@ -171,7 +175,7 @@ drgn_pointer_from_ctf(struct drgn_ctf_info *info, ctf_dict_t *dict,
 
 	aliased_id = ctf_type_reference(dict, id);
 
-	err = drgn_type_from_ctf_id(info, dict, aliased_id, &aliased, NULL);
+	err = drgn_type_from_ctf_id(info, dict, aliased_id, &aliased, false);
 	if (err)
 		return err;
 
@@ -246,7 +250,7 @@ drgn_array_from_ctf(struct drgn_ctf_info *info, ctf_dict_t *dict,
 
 	ctf_array_info(dict, id, &arinfo);
 
-	err = drgn_type_from_ctf_id(info, dict, arinfo.ctr_contents, &etype, NULL);
+	err = drgn_type_from_ctf_id(info, dict, arinfo.ctr_contents, &etype, false);
 	if (err)
 		return err;
 
@@ -263,7 +267,7 @@ struct drgn_ctf_thunk_arg {
 	struct drgn_ctf_info *info;
 	ctf_dict_t *dict;
 	ctf_id_t id;
-	struct bit_field_info *bfi;
+	uint64_t bit_field_size;
 };
 
 static struct drgn_error *drgn_ctf_thunk(struct drgn_object *res, void *void_arg)
@@ -289,9 +293,9 @@ static struct drgn_error *drgn_ctf_thunk(struct drgn_object *res, void *void_arg
 
 	if (res) {
 		err = drgn_type_from_ctf_id(arg->info, arg->dict,
-		                            arg->id, &type, arg->bfi);
+		                            arg->id, &type, (bool)arg->bit_field_size);
 		if (!err)
-			err = drgn_object_set_absent(res, type, arg->bfi ? arg->bfi->bit_field_size : 0);
+			err = drgn_object_set_absent(res, type, arg->bit_field_size);
 
 		if (!err)
 			free(arg);  /* Case 2(a) */
@@ -323,7 +327,7 @@ drgn_function_from_ctf(struct drgn_ctf_info *info, ctf_dict_t *dict,
 
 	drgn_function_type_builder_init(&builder, info->prog);
 
-	err = drgn_type_from_ctf_id(info, dict, funcinfo.ctc_return, &qt, NULL);
+	err = drgn_type_from_ctf_id(info, dict, funcinfo.ctc_return, &qt, false);
 	if (err)
 		goto out;
 
@@ -355,7 +359,7 @@ drgn_function_from_ctf(struct drgn_ctf_info *info, ctf_dict_t *dict,
 	free(argtypes);
 	argtypes = NULL;
 
-	err = drgn_type_from_ctf_id(info, dict, funcinfo.ctc_return, ret, NULL);
+	err = drgn_type_from_ctf_id(info, dict, funcinfo.ctc_return, ret, false);
 	if (err)
 		goto out;
 	err = drgn_function_type_create(&builder, qt, variadic, &drgn_language_c, &ret->type);
@@ -380,58 +384,112 @@ static int compound_member_visit(const char *name, ctf_id_t membtype, unsigned l
 	union drgn_lazy_object obj;
 	struct compound_member_visit_arg *arg = void_arg;
 	struct drgn_ctf_thunk_arg *thunk_arg = calloc(1, sizeof(*thunk_arg));
-	struct bit_field_info bfi;
 	ctf_id_t resolved;
+	ctf_encoding_t enc;
+	bool has_encoding = false;
 
 	//printf("Compound member %s id %lu\n", name, membtype);
 	thunk_arg->dict = arg->dict;
 	thunk_arg->info = arg->info;
 	thunk_arg->id = membtype;
+	thunk_arg->bit_field_size = 0;
 	drgn_lazy_object_init_thunk(&obj, arg->info->prog, drgn_ctf_thunk, thunk_arg);
-
-	bfi.bit_offset = 0;
-	bfi.bit_field_size = 0;
 
 	/* libctf gives us 0-length name for anonymous members, but drgn prefers
 	 * NULL. 0-length name seems to be legal, but inaccessible for the API. */
 	if (name[0] == '\0')
 		name = NULL;
 
+	/*
+	 * CTF has some really frustrating semantics regarding compound members
+	 * and bit fields. Hopefully this explains what this code is doing.
+	 *
+	 * (1) Bit field offset can be specified as part of the compound member
+	 * (see the signature of this function). However, for some reason, the
+	 * bit field size is not represented this way.
+	 *
+	 * (2) Bit field offset, along with bit field size, can be specified as
+	 * part of integer/float "encoding" field. This has a key disadvantage:
+	 * the underlying integer type (e.g. unsigned int) and any typedefs +
+	 * qualifiers, needs to be duplicated for each unique encoding seen in a
+	 * bit field. This not only wastes space, but also creates quite
+	 * confusing CTF data (multiple ints, floats, typedefs with the same
+	 * name).
+	 *
+	 * (3) Since the solution in #2 is pretty sub-optimal, there is a CTF
+	 * type kind, CTF_K_SLICE. This is essentially a type which references
+	 * another type, and modifies its encoding. This means that you could
+	 * have something like this:
+	 *    STRUCT
+	 *      member "foo" offset 0 bits
+	 *        SLICE (encoding: offset 4 bits, size 1 bit)
+	 *          TYPEDEF "u64" -> TYPEDEF "__u64"
+	 *            INTEGER "unsigned long long int" (offset 0, size 64 bits)
+	 *
+	 * Comapred to (2), there is a new type ID for the SLICE type, but the
+	 * TYPEDEF and INTEGER types there are unmodified - they are the base
+	 * type IDs, with no duplication. This seems great, right?
+	 *
+	 * Unfortunately, libctf's API denies the existence of a SLICE type.
+	 * When you look up the type kind for a SLICE, it simply looks at the
+	 * referenced type and returns that type's kind. This is frustrating,
+	 * because it means that secretly, any type could be a slice modifying
+	 * the encoding of a target type -- and you have no way to detect it,
+	 * because libctf refuses to admit that the type is indeed a SLICE.
+	 *
+	 * To add to all of this, we are actually forced to deal with CTF data
+	 * that is generated using approach (2) -- generated by a program called
+	 * dwarf2ctf, and approach (3) -- generated by GCC. So our solution
+	 * needs to handle both cases gracefully.
+	 *
+	 * The approach is as follows: try to get the integer encoding from the
+	 * member type ID, regardless of whether it looks like an integer. This
+	 * handles the possibility that we're looking at a slice. Failing that,
+	 * try to resolve to the type ID, and if it's an integer or float, then
+	 * grab the encoding from that. Finally, regardless of whether the
+	 * encoding information came from a slice or the target, we use the
+	 * offset and bit size. We still need to detect whether the type **IS**
+	 * a bitfield, which we do by checking whether the bit size == 8 * byte
+	 * size. If so, we set the bit_field_size parameter to inform drgn's
+	 * type system.
+	 */
 	resolved = ctf_type_resolve(arg->dict, membtype);
-	if (resolved != CTF_ERR && (ctf_type_kind(arg->dict, resolved) == CTF_K_INTEGER ||
-	                            ctf_type_kind(arg->dict, resolved) == CTF_K_FLOAT)) {
+	if (ctf_type_encoding(arg->dict, membtype, &enc) == 0) {
 		/*
-		 * CTF allows offset information to reside within the type entry
-		 * for integers and floats. This is kinda frustrating because we
-		 * don't want to greedily lookup every type in a compound type,
-		 * but we do need to update our offset value when creating these
-		 * members. This is our solution.
-		 *
-		 * We evaluate the lazy object only when we see a member whose
-		 * resolved type is an integer or float, *and* when that member
-		 * has an offset. That way, it updates our "offset" variable.
-		 *
-		 * While we could simply grab the "cte_offset" and add that to
-		 * the offset info we already have, and then leave the lazy
-		 * object unevaluated, that causes one major issue: we won't be
-		 * able to handle error cases where an offset is provided in an
-		 * integer type, but it was unexpected. By doing it this way,
-		 * the "offset" checks in drgn_{integer,float}_from_ctf will
-		 * properly know when it's ok to have a cte_offset value, and
-		 * when it's not.
+		 * We're either looking at a SLICE type, or we're looking at a
+		 * raw base INTEGER with no intermediate qualifiers or typedefs.
+		 * Either way, use the encoding.
 		 */
-		ctf_encoding_t enc;
-		ctf_type_encoding(arg->dict, resolved, &enc);
-		if (enc.cte_offset || enc.cte_bits & 0x7) {
-			//printf("Found member %s with offset %lu + %u\n", name, offset, enc.cte_offset);
-			thunk_arg->bfi = &bfi;
-			arg->err = drgn_lazy_object_evaluate(&obj);
-			if (arg->err) {
-				drgn_lazy_object_deinit(&obj);
-				return -1;
-			}
-			//printf("Now offset is %lu\n", offset);
-		}
+		has_encoding = true;
+
+		/*
+		 * This must have been a base INTEGER or FLOAT, since resolving
+		 * failed. Set resolved to the original type ID so we can use it
+		 * to detect the byte size below.
+		 */
+		if (resolved == CTF_ERR)
+			resolved = membtype;
+	} else if (resolved != CTF_ERR) {
+		/*
+		 * Check for the base type being INTEGER / FLOAT and if so, use
+		 * the encoding. This would be the old-fashioned approach (2).
+		 */
+		int kind = ctf_type_kind(arg->dict, resolved);
+		if ((kind == CTF_K_INTEGER || kind == CTF_K_FLOAT)
+		    && ctf_type_encoding(arg->dict, resolved, &enc) == 0)
+			has_encoding = true;
+	}
+
+	if (has_encoding) {
+		/*
+		 * The encoded offset augments the offset we already have. The
+		 * encoded bit field size may need to be used, if it conflicts
+		 * with the byte size of the type.
+		 */
+		size_t bytes = ctf_type_size(arg->dict, resolved);
+		if (enc.cte_bits != bytes * 8)
+			thunk_arg->bit_field_size = enc.cte_bits;
+		offset += enc.cte_offset;
 	}
 
 	arg->err = drgn_compound_type_builder_add_member(arg->builder, &obj, name, offset);
@@ -563,7 +621,7 @@ drgn_forward_from_ctf(struct drgn_ctf_info *info, ctf_dict_t *dict,
 static struct drgn_error *
 drgn_type_from_ctf_id(struct drgn_ctf_info *info, ctf_dict_t *dict,
                       ctf_id_t id, struct drgn_qualified_type *ret,
-		      struct bit_field_info *bfi)
+		      bool in_bitfield)
 {
 	int ctf_kind;
 
@@ -576,11 +634,11 @@ again:
 	//printf("ID %lu Kind %d\n", id, ctf_kind);
 	switch (ctf_kind) {
 		case CTF_K_INTEGER:
-			return drgn_integer_from_ctf(info, dict, id, ret, bfi);
+			return drgn_integer_from_ctf(info, dict, id, ret, in_bitfield);
 		case CTF_K_FLOAT:
-			return drgn_float_from_ctf(info, dict, id, ret, bfi);
+			return drgn_float_from_ctf(info, dict, id, ret, in_bitfield);
 		case CTF_K_TYPEDEF:
-			return drgn_typedef_from_ctf(info, dict, id, ret);
+			return drgn_typedef_from_ctf(info, dict, id, ret, in_bitfield);
 		case CTF_K_POINTER:
 			return drgn_pointer_from_ctf(info, dict, id, ret);
 		case CTF_K_ENUM:
@@ -738,7 +796,7 @@ drgn_type_from_ctf(enum drgn_type_kind kind, const char *name,
 	free(name_copy);
 	if (err)
 		return err;
-	return drgn_type_from_ctf_id(info, dict, id, ret, NULL);
+	return drgn_type_from_ctf_id(info, dict, id, ret, false);
 }
 
 struct drgn_error *
