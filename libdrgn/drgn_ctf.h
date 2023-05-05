@@ -14,6 +14,17 @@
 
 #include "hash_table.h"
 
+/* Contains the "ground truth" integer / float name + id */
+struct drgn_ctf_atomnode {
+	ctf_dict_t *dict;
+	ctf_id_t id;
+	size_t size;
+	struct drgn_ctf_atomnode *next;
+};
+
+DEFINE_HASH_MAP(drgn_ctf_atoms, const char *, struct drgn_ctf_atomnode,
+		c_string_key_hash_pair, c_string_key_eq);
+
 struct drgn_ctf_enumnode {
 	ctf_dict_t *dict;
 	ctf_id_t id;
@@ -32,6 +43,7 @@ struct drgn_ctf_info {
 	ctf_archive_t *archive;
 	struct drgn_ctf_dicts dicts;
 	struct drgn_ctf_enums enums;
+	struct drgn_ctf_atoms atoms;
 	ctf_dict_t *root;
 	ctf_dict_t *vmlinux;
 };

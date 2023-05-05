@@ -706,9 +706,21 @@ out:
 	return err;
 }
 
+static void find_canonical(struct drgn_ctf_info *info, const char *name,
+			   ctf_dict_t *search_dict, ctf_id_t *id_ret)
+{
+	struct drgn_ctf_atoms_iterator it = drgn_ctf_atoms_search(&info->atoms, &name);
+	struct drgn_ctf_atomnode *node = it.entry ? &it.entry->value : NULL;
+
+	if (node && (node->dict == search_dict || node->dict == info->root)) {
+		*id_ret = node->id;
+	}
+}
+
+
 static struct drgn_error *
-drgn_ctf_lookup_by_name(ctf_dict_t *dict, const char *name, ctf_id_t *id_ret,
-			ctf_dict_t **dict_ret)
+drgn_ctf_lookup_by_name(struct drgn_ctf_info *info, ctf_dict_t *dict, const char *name,
+			ctf_id_t *id_ret, ctf_dict_t **dict_ret)
 {
 	ctf_id_t id = ctf_lookup_by_name(dict, name);
 	int err = ctf_errno(dict);
@@ -716,11 +728,34 @@ drgn_ctf_lookup_by_name(ctf_dict_t *dict, const char *name, ctf_id_t *id_ret,
 		return &drgn_not_found;
 	} else if (id == CTF_ERR) {
 		return drgn_error_ctf(ctf_errno(dict));
-	} else {
-		*id_ret = id;
-		*dict_ret = dict;
-		return NULL;
 	}
+	*id_ret = id;
+	*dict_ret = dict;
+	int kind = ctf_type_kind(dict, id);
+	if (kind == CTF_K_INTEGER || kind == CTF_K_FLOAT) {
+		/*
+		 * We're looking up an integer or float by name. Unfortunately,
+		 * CTF is littered with integer and float types that have the
+		 * same name, but different encodings of offsets & sizes
+		 * depending on the particular bit field.
+		 *
+		 * Most critically, the byte sizes will differ among all of
+		 * these different definitions, depending on the bit field size!
+		 * So a "long unsigned int" which may be 8 bytes on a platform,
+		 * but which gets used in a bit field of size 31, would have a
+		 * byte size of 4 returned by ctf_type_size(). If we
+		 * accidentally looked up an integer type ID which is actually
+		 * part of a bitfield (statistically quite likely) then we are
+		 * likely to get the wrong type size when we construct the type.
+		 *
+		 * To avoid this, we have a hash of name to base atomic types
+		 * which gets filled at initialization time.  Use that for
+		 * looking up integer and float type IDs, so we can be confident
+		 * that we have the crorect size.
+		 */
+		find_canonical(info, name, dict, id_ret);
+	}
+	return NULL;
 }
 
 static struct drgn_error *
@@ -734,7 +769,7 @@ drgn_ctf_find_type_name_all_dicts(struct drgn_ctf_info *info, const char *name,
 	 * module type information.
 	 */
 	if (info->vmlinux) {
-		err = drgn_ctf_lookup_by_name(info->vmlinux, name, id_ret, dict_ret);
+		err = drgn_ctf_lookup_by_name(info, info->vmlinux, name, id_ret, dict_ret);
 		if (err != &drgn_not_found)
 			return err;
 	}
@@ -751,7 +786,7 @@ drgn_ctf_find_type_name_all_dicts(struct drgn_ctf_info *info, const char *name,
 		/* Don't re-do search */
 		if (dict == info->root || dict == info->vmlinux)
 			continue;
-		err = drgn_ctf_lookup_by_name(dict, name, id_ret, dict_ret);
+		err = drgn_ctf_lookup_by_name(info, dict, name, id_ret, dict_ret);
 		if (err != &drgn_not_found)
 			return err;
 	}
@@ -784,12 +819,7 @@ drgn_type_from_ctf(enum drgn_type_kind kind, const char *name,
 		return err;
 
 	if (dict) {
-		id = ctf_lookup_by_name(dict, name_copy);
-		int errnum = ctf_errno(dict);
-		if (id == CTF_ERR && errnum == ECTF_NOTYPE)
-			err = &drgn_not_found;
-		else if (id == CTF_ERR)
-			err = drgn_error_ctf(errnum);
+		err = drgn_ctf_lookup_by_name(info, dict, name_copy, &id, &dict);
 	} else {
 		err = drgn_ctf_find_type_name_all_dicts(info, name_copy, &id, &dict);
 	}
@@ -973,20 +1003,68 @@ static int process_enumerator(const char *name, int val, void *void_arg)
 	return 0;
 }
 
+static struct drgn_error *
+canonical_atom(struct drgn_ctf_info *info, const char *name, ctf_dict_t *dict, ctf_id_t id)
+{
+	struct drgn_ctf_atoms_iterator it;
+	struct drgn_ctf_atoms_entry entry;
+	struct hash_pair hp;
+	ctf_encoding_t enc;
+	size_t size = ctf_type_size(dict, id);
+	struct drgn_error *err = NULL;
+
+	ctf_type_encoding(dict, id, &enc);
+	if (enc.cte_offset != 0 || enc.cte_bits != size * 8)
+		return 0;
+
+	hp = drgn_ctf_atoms_hash(&name);
+	it = drgn_ctf_atoms_search_hashed(&info->atoms, &name, hp);
+	if (it.entry) {
+		if (size > it.entry->value.size
+		    || (size == it.entry->value.size && id < it.entry->value.id)) {
+			/*
+			 * We'll consider an atom the canonical representation
+			 * if it is the largest non-bitfield atom for that name.
+			 * Special case, if the atom is non-bitfield and has the
+			 * same size of the previous, choose the lowest ID, for
+			 * the better chance that it's contained in the root
+			 * dict.
+			 */
+			it.entry->value.dict = dict;
+			it.entry->value.id = id;
+			it.entry->value.size = size;
+		}
+	} else {
+		entry.key = name;
+		entry.value.dict = dict;
+		entry.value.id = id;
+		entry.value.size = size;
+		if (drgn_ctf_atoms_insert_searched(&info->atoms, &entry, hp, NULL) < 0)
+			err = &drgn_enomem;
+	}
+	return err;
+}
+
 static int process_type(ctf_id_t type, void *void_arg)
 {
 	struct drgn_ctf_arg *arg = void_arg;
-	if (ctf_type_kind(arg->dict, type) != CTF_K_ENUM)
+	if (ctf_type_kind(arg->dict, type) == CTF_K_ENUM) {
+		arg->type = type;
+		int ret = ctf_enum_iter(arg->dict, type, process_enumerator, void_arg);
+		/* For CTF errors, set a drgn error immediately */
+		if (ret != 0 && !arg->err)
+			arg->err = drgn_error_ctf(ctf_errno(arg->dict));
+
+		arg->type = 0;
+		return ret;
+	} else if (ctf_type_kind(arg->dict, type) == CTF_K_INTEGER
+		   || ctf_type_kind(arg->dict, type) == CTF_K_FLOAT) {
+		arg->err = canonical_atom(arg->info, ctf_type_name_raw(arg->dict, type),
+					  arg->dict, type);
+		return arg->err ? -1 : 0;
+	} else {
 		return 0;
-
-	arg->type = type;
-	int ret = ctf_enum_iter(arg->dict, type, process_enumerator, void_arg);
-	/* For CTF errors, set a drgn error immediately */
-	if (ret != 0 && !arg->err)
-		arg->err = drgn_error_ctf(ctf_errno(arg->dict));
-
-	arg->type = 0;
-	return ret;
+	}
 }
 
 static int process_dict(ctf_dict_t *unused, const char *name, void *void_arg)
@@ -1001,9 +1079,9 @@ static int process_dict(ctf_dict_t *unused, const char *name, void *void_arg)
 	if (arg->err)
 		return -1;
 
-	if (!ctf_parent_name(dict))
+	if (strcmp(name, "shared_ctf") == 0)
 		arg->info->root = dict;
-	if (strcmp(name, "vmlinux") == 0)
+	else if (strcmp(name, "vmlinux") == 0)
 		arg->info->vmlinux = dict;
 
 	arg->dict = dict;
@@ -1033,9 +1111,12 @@ drgn_program_load_ctf(struct drgn_program *prog, const char *file, struct drgn_c
 	info->prog = prog;
 	drgn_ctf_dicts_init(&info->dicts);
 	drgn_ctf_enums_init(&info->enums);
+	drgn_ctf_atoms_init(&info->atoms);
 	info->archive = ctf_open(file, NULL, &errnum);
 	if (!info->archive) {
 		drgn_ctf_dicts_deinit(&info->dicts);
+		drgn_ctf_enums_deinit(&info->enums);
+		drgn_ctf_atoms_deinit(&info->atoms);
 		free(info);
 		return drgn_error_format(DRGN_ERROR_OTHER, "ctf_open \"%s\": %s", file, ctf_errmsg(errnum));
 	}
@@ -1073,6 +1154,7 @@ drgn_program_load_ctf(struct drgn_program *prog, const char *file, struct drgn_c
 	return NULL;
 error:
 	ctf_close(info->archive);
+	drgn_ctf_atoms_deinit(&info->atoms);
 	drgn_ctf_enums_deinit(&info->enums);
 	drgn_ctf_dicts_deinit(&info->dicts);
 	free(info);
