@@ -1098,28 +1098,73 @@ static int process_dict(ctf_dict_t *unused, const char *name, void *void_arg)
 	return ret;
 }
 
+/*
+ * libctf contains an awfully convenient "ctf_open" which seems to "do what you
+ * mean". Unfortunately, it is not present when you compile with -lctf-nobfd.
+ * And avoiding linking to BFD can be very useful. So let's do what we need.
+ */
+static struct drgn_error *read_ctf_buf(const char *file, char **buf_ret, size_t *size_ret)
+{
+	long size, amt;
+	char *buf;
+	FILE *f = fopen(file, "r");
+
+	if (!f)
+		return drgn_error_create_os("Error opening CTF file", errno, file);
+
+	if (fseek(f, 0, SEEK_END) == -1) {
+		fclose(f);
+		return drgn_error_create_os("Error seeking to end of CTF file", errno, file);
+	}
+	size = ftell(f);
+	fseek(f, 0, SEEK_SET);
+	buf = malloc(size + 1);
+	if (!buf) {
+		fclose(f);
+		return &drgn_enomem;
+	}
+	amt = fread(buf, 1, size, f);
+	if (amt != size) {
+		free(buf);
+		fclose(f);
+		return drgn_error_create_os("Error reading CTF file", errno, file);
+	}
+	fclose(f);
+	buf[size] = '\0';
+	*buf_ret = buf;
+	*size_ret = size;
+	return NULL;
+}
+
 struct drgn_error *
 drgn_program_load_ctf(struct drgn_program *prog, const char *file, struct drgn_ctf_info **ret)
 {
 	struct drgn_error *err;
 	int errnum = 0;
 	struct drgn_ctf_info *info = calloc(1, sizeof(*info));
+	ctf_sect_t data = {0};
+	char *ctf_contents;
+
+	err = read_ctf_buf(file, &ctf_contents, &data.cts_size);
+	if (err)
+		return err;
+	data.cts_data = ctf_contents;
 
 	if (!info)
 		return &drgn_enomem;
 
 	info->prog = prog;
+	info->ctf_data = ctf_contents;
+	info->ctf_size = data.cts_size;
+	info->archive = ctf_arc_bufopen(&data, NULL, NULL, &errnum);
+	if (!info->archive) {
+		free(info);
+		return drgn_error_format(DRGN_ERROR_OTHER, "ctf_arc_bufopen \"%s\": %s",
+					 file, ctf_errmsg(errnum));
+	}
 	drgn_ctf_dicts_init(&info->dicts);
 	drgn_ctf_enums_init(&info->enums);
 	drgn_ctf_atoms_init(&info->atoms);
-	info->archive = ctf_open(file, NULL, &errnum);
-	if (!info->archive) {
-		drgn_ctf_dicts_deinit(&info->dicts);
-		drgn_ctf_enums_deinit(&info->enums);
-		drgn_ctf_atoms_deinit(&info->atoms);
-		free(info);
-		return drgn_error_format(DRGN_ERROR_OTHER, "ctf_open \"%s\": %s", file, ctf_errmsg(errnum));
-	}
 
 	/* While CTF offers efficient type lookup by name in most cases,
 	 * enumerator names are a glaring omission here. We'd prefer to avoid
@@ -1153,7 +1198,8 @@ drgn_program_load_ctf(struct drgn_program *prog, const char *file, struct drgn_c
 
 	return NULL;
 error:
-	ctf_close(info->archive);
+	ctf_arc_close(info->archive);
+	free(info->ctf_data);
 	drgn_ctf_atoms_deinit(&info->atoms);
 	drgn_ctf_enums_deinit(&info->enums);
 	drgn_ctf_dicts_deinit(&info->dicts);

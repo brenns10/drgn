@@ -40,6 +40,8 @@ DEFINE_HASH_MAP(drgn_ctf_dicts, const char *, ctf_dict_t *,
 
 struct drgn_ctf_info {
 	struct drgn_program *prog;
+	char *ctf_data;
+	size_t ctf_size;
 	ctf_archive_t *archive;
 	struct drgn_ctf_dicts dicts;
 	struct drgn_ctf_enums enums;
