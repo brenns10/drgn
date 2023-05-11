@@ -46,6 +46,20 @@ format_type_name(enum drgn_type_kind kind, const char *name, size_t name_len, ch
 	return NULL;
 }
 
+static inline int get_ctf_errno(ctf_dict_t *dict)
+{
+	/*
+	 * On some libctf versions, if an error is set on the parent dict, the
+	 * child dict will still return 0 in ctf_errno. To avoid this, wrap
+	 * ctf_errno() and verify.
+	 */
+	 int err = ctf_errno(dict);
+	 ctf_dict_t *parent = ctf_parent_dict(dict);
+	 if (!err && parent)
+		 err = ctf_errno(parent);
+	 return err;
+}
+
 static struct drgn_error *drgn_error_ctf(int err)
 {
 	return drgn_error_format(DRGN_ERROR_OTHER, "Internal CTF error: %s", ctf_errmsg(err));
@@ -181,7 +195,7 @@ drgn_pointer_from_ctf(struct drgn_ctf_info *info, ctf_dict_t *dict,
 
 	ssize_t size = ctf_type_size(dict, id);
 	if (size < 0)
-		return drgn_error_ctf(ctf_errno(dict));
+		return drgn_error_ctf(get_ctf_errno(dict));
 
 	return drgn_pointer_type_create(info->prog, aliased, size,
 	                                DRGN_PROGRAM_ENDIAN, &drgn_language_c,
@@ -228,7 +242,7 @@ drgn_enum_from_ctf(struct drgn_ctf_info *info, ctf_dict_t *dict,
 	arg.builder = &builder;
 	if (ctf_enum_iter(dict, id, drgn_ctf_enum_visit, &arg) != 0) {
 		if (!arg.err)
-			arg.err = drgn_error_ctf(ctf_errno(dict));
+			arg.err = drgn_error_ctf(get_ctf_errno(dict));
 		goto out;
 	}
 	arg.err = drgn_enum_type_create(&builder, name, compatible_type.type,
@@ -528,7 +542,7 @@ drgn_compound_type_from_ctf(enum drgn_type_kind kind, struct drgn_ctf_info *info
 	/* Don't ask for the size until after checking for forward declared types. */
 	size = ctf_type_size(dict, id);
 	if (size < 0 ) {
-		err = drgn_error_ctf(ctf_errno(dict));
+		err = drgn_error_ctf(get_ctf_errno(dict));
 		goto out;
 	}
 
@@ -541,7 +555,7 @@ drgn_compound_type_from_ctf(enum drgn_type_kind kind, struct drgn_ctf_info *info
 		if (arg.err)
 			err = arg.err;
 		else
-			err = drgn_error_ctf(ctf_errno(dict));
+			err = drgn_error_ctf(get_ctf_errno(dict));
 		goto out;
 	}
 
@@ -723,11 +737,11 @@ drgn_ctf_lookup_by_name(struct drgn_ctf_info *info, ctf_dict_t *dict, const char
 			ctf_id_t *id_ret, ctf_dict_t **dict_ret)
 {
 	ctf_id_t id = ctf_lookup_by_name(dict, name);
-	int err = ctf_errno(dict);
+	int err = get_ctf_errno(dict);
 	if (id == CTF_ERR && err == ECTF_NOTYPE) {
 		return &drgn_not_found;
 	} else if (id == CTF_ERR) {
-		return drgn_error_ctf(ctf_errno(dict));
+		return drgn_error_ctf(get_ctf_errno(dict));
 	}
 	*id_ret = id;
 	*dict_ret = dict;
@@ -840,7 +854,7 @@ drgn_ctf_find_var(struct drgn_ctf_info *info, const char *name, ctf_dict_t *dict
 
 	id = ctf_lookup_variable(dict, name);
 	if (id == CTF_ERR) {
-		errnum = ctf_errno(dict);
+		errnum = get_ctf_errno(dict);
 		/*
 		 * Reading the libctf source code, there really shouldn't be any
 		 * case where ECTF_NEXT_END is returned here... but that's exactly
@@ -1053,7 +1067,7 @@ static int process_type(ctf_id_t type, void *void_arg)
 		int ret = ctf_enum_iter(arg->dict, type, process_enumerator, void_arg);
 		/* For CTF errors, set a drgn error immediately */
 		if (ret != 0 && !arg->err)
-			arg->err = drgn_error_ctf(ctf_errno(arg->dict));
+			arg->err = drgn_error_ctf(get_ctf_errno(arg->dict));
 
 		arg->type = 0;
 		return ret;
@@ -1090,7 +1104,7 @@ static int process_dict(ctf_dict_t *unused, const char *name, void *void_arg)
 	int ret = ctf_type_iter(dict, process_type, void_arg);
 	/* For CTF errors, set a drgn error immediately */
 	if (ret != 0 && !arg->err)
-		arg->err = drgn_error_ctf(ctf_errno(dict));
+		arg->err = drgn_error_ctf(get_ctf_errno(dict));
 
 	arg->dict = NULL;
 	arg->dict_name = NULL;
