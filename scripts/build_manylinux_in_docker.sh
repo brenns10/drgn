@@ -14,6 +14,7 @@ yum install -y \
 	snappy-devel \
 	xz-devel \
 	zlib-devel \
+	texinfo \
 	zstd
 
 # The manylinux image contains an upgraded autotools in /usr/local, but the
@@ -53,6 +54,15 @@ curl -L "$libkdumpfile_url" | tar -xz --strip-components=1
 make -j$(($(nproc) + 1))
 make install
 
+binutils_version=2.40
+binutils_url=https://ftp.gnu.org/gnu/binutils/binutils-$binutils_version.tar.xz
+mkdir /tmp/binutils
+cd /tmp/binutils
+curl -L "$binutils_url" | tar -xJ --strip-components=1
+CFLAGS="-fPIC" ./configure --with-system-zlib
+make -j$(($(noproc) + 1))
+make install
+
 ldconfig
 
 mkdir /tmp/drgn
@@ -71,7 +81,7 @@ build_for_python() {
 
 for pybin in /opt/python/cp*/bin; do
 	if build_for_python "$pybin/python"; then
-		"$pybin/pip" wheel . --no-deps -w /tmp/wheels/
+		CONFIGURE_FLAGS="--with-libctf=-l:libctf-nobfd.a\ -L/tmp/binutils/libiberty/\ -l:libiberty.a" "$pybin/pip" wheel . --no-deps -w /tmp/wheels/
 	fi
 done
 
