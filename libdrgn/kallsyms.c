@@ -39,6 +39,7 @@ struct kallsyms_reader {
 	uint8_t *names;
 	char *token_table;
 	uint16_t *token_index;
+	bool long_names;
 };
 
 /*
@@ -56,6 +57,57 @@ struct kallsyms_reader {
  */
 #define MAX_SYMBOL_LENGTH 0x10000
 
+/*
+ * Since 73bbb94466fd3 ("kallsyms: support "big" kernel symbols"), the
+ * "kallsyms_names" array may use the most significant bit to indicate that the
+ * initial element for each symbol (normally representing the number of tokens
+ * in the symbol) requires two bytes.
+ *
+ * Unfortunately, that means that values 128-255 are now ambiguous: on older
+ * kernels, they should be interpreted literally, but on newer kernels, they
+ * require treating as a two byte sequence. Since the commit included no changes
+ * to the symbol names or vmcoreinfo, there's no way to detect it except via
+ * heuristics.
+ *
+ * The commit in question is a new feature and not likely to be backported to
+ * stable, so our heuristic is that it was first included in kernel 6.1.
+ * However, we first check the environment variable DRGN_KALLSYMS_LONG: if it
+ * exists, then we use its first character to determine our behavior: 1, y, Y
+ * all indicate that we should use long names. 0, n, N all indicate that we
+ * should not.
+ */
+static bool guess_long_names(struct drgn_program *prog)
+{
+	const char *env = getenv("DRGN_KALLSYMS_LONG");
+	const char *osrelease;
+	int i;
+	int major = 0, minor = 0;
+
+	if (env) {
+		if (*env == '1' || *env == 'y' || *env == 'Y')
+			return true;
+		else if (*env == '0' || *env == 'n' || *env == 'N')
+			return false;
+	}
+
+	osrelease = prog->vmcoreinfo.osrelease;
+	for (i = 0; i < sizeof(prog->vmcoreinfo.osrelease) && osrelease[i]; i++) {
+		char c = osrelease[i];
+		if (c < '0' || c > '9')
+			break;
+		major *= 10;
+		major += osrelease[i] - '0';
+	}
+	for (i = i + 1; i < sizeof(prog->vmcoreinfo.osrelease) && osrelease[i] && osrelease[i] != '.'; i++) {
+		char c = osrelease[i];
+		if (c < '0' || c > '9')
+			break;
+		minor *= 10;
+		minor += osrelease[i] - '0';
+	}
+	return (major == 6 && minor >= 1) || major > 6;
+}
+
 /**
  * Copy the kallsyms names tables from the program into host memory.
  * @param prog Program to read from
@@ -71,7 +123,8 @@ kallsyms_copy_tables(struct drgn_program *prog, struct kallsyms_reader *kr,
 	uint64_t last_token;
 	size_t token_table_size, names_idx;
 	char data;
-	uint8_t len;
+	uint8_t len_u8;
+	int len;
 	bool bswap;
 
 	err = drgn_program_bswap(prog, &bswap);
@@ -128,12 +181,23 @@ kallsyms_copy_tables(struct drgn_program *prog, struct kallsyms_reader *kr,
 	/* Now find the end of the names array by skipping through it, then copy
 	 * that into host memory. */
 	names_idx = 0;
+	kr->long_names = guess_long_names(prog);
 	for (size_t i = 0; i < kr->num_syms; i++) {
 		err = drgn_program_read_u8(prog,
 					   loc->kallsyms_names + names_idx,
-					   false, &len);
+					   false, &len_u8);
 		if (err)
 			return err;
+		len = len_u8;
+		if ((len & 0x80) && kr->long_names) {
+			err = drgn_program_read_u8(prog,
+						loc->kallsyms_names + names_idx + 1,
+						false, &len_u8);
+			if (err)
+				return err;
+			len = (len & 0x7F) | (len_u8 << 7);
+			names_idx++;
+		}
 		names_idx += len + 1;
 	}
 	kr->names = malloc(names_idx);
@@ -167,6 +231,12 @@ kallsyms_expand_symbol(struct kallsyms_reader *kr, unsigned int offset,
 	unsigned int len = *data;
 	bool skipped_first = false;
 	size_t bytes = 0;
+
+	if ((len & 0x80) && kr->long_names) {
+		data++;
+		offset++;
+		len = (0x7F & len) | (*data << 7);
+	}
 
 	offset += len + 1;
 	data += 1;
@@ -214,7 +284,9 @@ kallsyms_create_symbol_array(struct kallsyms_finder *reg, struct kallsyms_reader
 	size_t names_idx = 0;
 	size_t length = 0;
 	for (int i = 0; i < kr->num_syms; i++) {
-		uint8_t num_tokens = kr->names[names_idx];
+		unsigned int num_tokens = kr->names[names_idx];
+		if ((num_tokens & 0x80) && kr->long_names)
+			num_tokens = (num_tokens & 0x7F) | (kr->names[++names_idx] << 7);
 		for (int j = names_idx + 1; j < names_idx + num_tokens + 1; j++)
 			length += token_lengths[kr->names[j]];
 		length++; /* nul terminator */
