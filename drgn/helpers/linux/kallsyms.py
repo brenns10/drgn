@@ -42,20 +42,17 @@ def make_kallsyms_vmlinux_finder(prog: Program) -> KallsymsFinder:
     :returns: a callable symbol finder object
     """
     symbol_reqd = [
-        ("kallsyms_names", True),
-        ("kallsyms_token_table", True),
-        ("kallsyms_token_index", True),
-        ("kallsyms_num_syms", True),
-        ("kallsyms_offsets", False),
-        ("kallsyms_relative_base", False),
-        ("kallsyms_addresses", False),
-        ("_stext", True),
+        "kallsyms_names",
+        "kallsyms_token_table",
+        "kallsyms_token_index",
+        "kallsyms_num_syms",
+        "kallsyms_offsets",
+        "kallsyms_relative_base",
+        "kallsyms_addresses",
+        "_stext",
     ]
     symbols = _vmcoreinfo_symbols(prog)
     args = []
-    for sym, required in symbol_reqd:
-        if required:
-            args.append(symbols[sym])
-        else:
-            args.append(symbols.get(sym, 0))
+    for sym in symbol_reqd:
+        args.append(symbols.get(sym, 0))
     return KallsymsFinder(prog, *args)

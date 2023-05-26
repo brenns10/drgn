@@ -13,6 +13,7 @@
 #define DRGN_KALLSYMS_H
 
 #include <stdint.h>
+#include <sys/types.h>
 
 struct drgn_program;
 struct drgn_module;
@@ -47,10 +48,16 @@ struct kallsyms_finder {
 	struct drgn_program *prog;
 	/** Number of symbols contained */
 	uint32_t num_syms;
+	/** Allocated size of symbols and addresses array */
+	uint32_t num_allocated;
 	/** Array of symbol names */
 	char **symbols;
 	/** Buffer backing the symbols array, all point into here */
 	char *symbol_buffer;
+	/** Bytes used of symbol buffer array */
+	size_t symbol_buffer_len;
+	/** Allocated size of symbol buffer array */
+	size_t symbol_buffer_allocated;
 	/** Array of symbol addresses */
 	uint64_t *addresses;
 	/** Array of one-character type codes*/

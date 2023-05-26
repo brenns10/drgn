@@ -294,6 +294,8 @@ kallsyms_create_symbol_array(struct kallsyms_finder *reg, struct kallsyms_reader
 	}
 
 	reg->symbol_buffer = malloc(length);
+	reg->symbol_buffer_len = length;
+	reg->symbol_buffer_allocated = length;
 	reg->symbols = calloc(kr->num_syms, sizeof(*reg->symbols));
 	reg->types = malloc(kr->num_syms);
 	reg->num_syms = kr->num_syms;
@@ -504,6 +506,7 @@ kallsyms_load_addresses(struct drgn_program *prog, struct kallsyms_finder *kr,
 	kr->addresses = malloc(kr->num_syms * sizeof(uint64_t));
 	if (!kr->addresses)
 		return &drgn_enomem;
+	kr->num_allocated = kr->num_syms;
 
 	if (loc->kallsyms_addresses) {
 		/*
@@ -631,16 +634,12 @@ void drgn_kallsyms_destroy(struct kallsyms_finder *kr)
 	}
 }
 
-struct drgn_error *drgn_kallsyms_init(struct kallsyms_finder *kr,
-				      struct drgn_program *prog,
-				      struct kallsyms_locations *loc)
+/** Load kallsyms data from vmcore + vmcoreinfo data */
+static struct drgn_error *
+drgn_kallsyms_from_vmcore(struct kallsyms_finder *kr, struct drgn_program *prog,
+			  struct kallsyms_locations *loc)
 {
 	struct drgn_error *err;
-
-	if (!(loc->kallsyms_names && loc->kallsyms_token_table
-	      && loc->kallsyms_token_index && loc->kallsyms_num_syms)) {
-		return NULL;
-	}
 
 	memset(kr, 0, sizeof(*kr));
 
@@ -654,7 +653,157 @@ struct drgn_error *drgn_kallsyms_init(struct kallsyms_finder *kr,
 		goto out;
 
 	return NULL;
+
 out:
 	drgn_kallsyms_destroy(kr);
 	return err;
+}
+
+/** Append a symbol onto the kallsyms finder, expanding the allocations if needed. */
+static struct drgn_error *
+kallsyms_append(struct kallsyms_finder *kr, const char *name, uint64_t address, char type)
+{
+	size_t name_len = strlen(name) + 1;
+	if (kr->num_syms == kr->num_allocated) {
+		kr->num_allocated = kr->num_allocated ? kr->num_allocated * 2 : 1024;
+		kr->symbols = realloc(kr->symbols, kr->num_allocated * sizeof(kr->symbols[0]));
+		kr->addresses = realloc(kr->addresses, kr->num_allocated * sizeof(kr->addresses[0]));
+		kr->types = realloc(kr->types, kr->num_allocated);
+		if (!kr->symbols || !kr->addresses || !kr->types)
+			return &drgn_enomem;
+	}
+
+	while (kr->symbol_buffer_len + name_len > kr->symbol_buffer_allocated) {
+		kr->symbol_buffer_allocated = kr->symbol_buffer_allocated ? kr->symbol_buffer_allocated * 2 : 4096;
+		kr->symbol_buffer = realloc(kr->symbol_buffer, kr->symbol_buffer_allocated);
+		if (!kr->symbol_buffer)
+			return &drgn_enomem;
+	}
+	memcpy(&kr->symbol_buffer[kr->symbol_buffer_len], name, name_len);
+	/*
+	 * We can't just store the pointer, since symbol_buffer may move during
+	 * reallocation. Store the index of the string in the buffer, and when
+	 * we finalize everything, we will fix it up.
+	 */
+	kr->symbols[kr->num_syms] = (char *)kr->symbol_buffer_len;
+	kr->addresses[kr->num_syms] = address;
+	kr->types[kr->num_syms] = type;
+	kr->num_syms++;
+	kr->symbol_buffer_len += name_len;
+	return NULL;
+}
+
+/** Reallocate buffers to fit contents, and fixup the symbol array */
+static struct drgn_error *
+kallsyms_finalize(struct kallsyms_finder *kr)
+{
+	kr->symbols = realloc(kr->symbols, kr->num_syms * sizeof(kr->symbols[0]));
+	kr->addresses = realloc(kr->addresses, kr->num_syms * sizeof(kr->addresses[0]));
+	kr->types = realloc(kr->types, kr->num_syms * sizeof(kr->types[0]));
+	kr->symbol_buffer = realloc(kr->symbol_buffer, kr->symbol_buffer_len);
+	kr->num_allocated = kr->num_syms;
+	kr->symbol_buffer_allocated = kr->symbol_buffer_len;
+	if (!kr->symbols || !kr->addresses || !kr->types || !kr->symbol_buffer)
+		return &drgn_enomem;
+	for (uint32_t i = 0; i < kr->num_syms; i++)
+		kr->symbols[i] = &kr->symbol_buffer[(size_t)kr->symbols[i]];
+	return NULL;
+}
+
+/** Load kallsyms directly from the /proc/kallsyms file */
+struct drgn_error *drgn_kallsyms_from_proc(struct kallsyms_finder *kr,
+					   struct drgn_program *prog)
+{
+	char *line = NULL;
+	size_t line_size = 0;
+	ssize_t res;
+	size_t line_number = 1;
+	struct drgn_error *err = NULL;
+	FILE *fp = fopen("/proc/kallsyms", "r");
+	if (!fp)
+		return drgn_error_create_os("Error opening kallsyms", errno, "/proc/kallsyms");
+
+	memset(kr, 0, sizeof(*kr));
+	kr->prog = prog;
+
+	while ((res = getline(&line, &line_size, fp)) != -1) {
+		char *save = NULL;
+		char *name, *addr_str, *type_str, *mod, *addr_rem;
+		char type;
+		uint64_t addr;
+
+		addr_str = strtok_r(line, " \t\r\n", &save);
+		type_str = strtok_r(NULL,"  \t\r\n", &save);
+		name = strtok_r(NULL,"  \t\r\n", &save);
+		mod = strtok_r(NULL,"  \t\r\n", &save);
+
+		if (!addr_str || !type_str || !name) {
+			err = drgn_error_format(DRGN_ERROR_SYNTAX, "Error parsing kallsyms line %zu", line_number);
+			break;
+		}
+		if (mod)
+			break;
+		type = *type_str;
+		addr = strtoull(addr_str, &addr_rem, 16);
+		if (*addr_rem) {
+			/* addr_rem should be set to the first un-parsed character, and
+			 * since the entire string should be a valid base 16 integer,
+			 * we expect it to be \0 */
+			 err = drgn_error_format(DRGN_ERROR_SYNTAX,
+						 "Invalid address \"%s\" in kallsyms line %zu",
+						 addr_str, line_number);
+			 break;
+		}
+		err = kallsyms_append(kr, name, addr, type);
+		if (err)
+			break;
+		line_number++;
+	}
+
+	if (!err && ferror(fp))
+		err = drgn_error_create_os("Error reading kallsyms", errno, "/proc/kallsyms");
+	else
+		err = kallsyms_finalize(kr);
+	fclose(fp);
+	free(line);
+	if (err)
+		drgn_kallsyms_destroy(kr);
+	return err;
+}
+
+struct drgn_error *drgn_kallsyms_init(struct kallsyms_finder *kr,
+				      struct drgn_program *prog,
+				      struct kallsyms_locations *loc)
+{
+	/*
+	 * There are two ways to parse kallsyms data: by using /proc/kallsyms,
+	 * or by finding the necessary symbols in the vmcoreinfo and using them
+	 * to read out the kallsyms data from the vmcore.
+	 *
+	 * Reading /proc/kallsyms is more straightforward, performant, and it
+	 * has broader kernel version support: it should be preferred for live
+	 * systems.
+	 *
+	 * Parsing kallsyms from a core dump is more involved, and it requires
+	 * that the kernel publish some symbol addresses in the VMCOREINFO note.
+	 * The following kernel commits are required, and were introduced in
+	 * 6.0:
+	 *
+	 * - 5fd8fea935a10 ("vmcoreinfo: include kallsyms symbols")
+	 * - f09bddbd86619 ("vmcoreinfo: add kallsyms_num_syms symbol")
+	 */
+	if (prog->flags & DRGN_PROGRAM_IS_LIVE)
+		return drgn_kallsyms_from_proc(kr, prog);
+	else if (loc->kallsyms_names && loc->kallsyms_token_table
+		 && loc->kallsyms_token_index && loc->kallsyms_num_syms)
+		return drgn_kallsyms_from_vmcore(kr, prog, loc);
+	else
+		return drgn_error_create(
+			DRGN_ERROR_MISSING_DEBUG_INFO,
+			"The symbols: kallsyms_names, kallsyms_token_table, "
+			"kallsyms_token_index, and kallsyms_num_syms were not "
+			"found in VMCOREINFO, and the program is not live, "
+			"so /proc/kallsyms cannot be used. There is not enough "
+			"information to use the kallsyms symbol finder."
+		);
 }
