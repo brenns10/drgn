@@ -264,13 +264,37 @@ def module_symbols(module: Object) -> List[Tuple[str, Object]]:
     :param module: Object of ``struct module *``
     :returns: A list of name, ``Elf_Sym`` pairs
     """
+    prog = module.prog_
     ks = module.kallsyms
+    num_symtab = ks.num_symtab.value_()
+
+    # The symtab field is a pointer, but it points at an array of Elf_Sym
+    # objects. Indexing it requires drgn to do pointer arithmetic and issue a
+    # lot of very small /proc/kcore reads, which can be a real performance
+    # issue. So convert it into an object representing a correctly-sized array,
+    # and then read that object all at once. This does one /proc/kcore read,
+    # which is a major improvement!
+    symtab = Object(
+        prog,
+        type=prog.array_type(ks.symtab.type_.type, num_symtab),
+        address=ks.symtab.value_(),
+    ).read_()
+
+    # The strtab is similarly a pointer into a contigous array of strings packed
+    # next to each other. Reading individual strings from /proc/kcore can be
+    # quite slow. So read the entire array of bytes into a Python bytes value,
+    # and we'll extract the individual symbol strings from there.
+    last_string_start = symtab[num_symtab - 1].st_name.value_()
+    last_string_len = len(ks.strtab[last_string_start].address_of_().string_()) + 1
+    strtab = prog.read(ks.strtab.value_(), last_string_start + last_string_len)
     syms = []
     for i in range(ks.num_symtab.value_()):
-        elfsym = ks.symtab[i]
+        elfsym = symtab[i]
         if not elfsym.st_name:
             continue
-        name = ks.strtab[elfsym.st_name].address_of_().string_().decode("ascii")
+        str_index = elfsym.st_name.value_()
+        nul_byte = strtab.find(b"\x00", str_index)
+        name = strtab[str_index:nul_byte].decode("ascii")
         syms.append((name, elfsym))
     return syms
 
