@@ -264,8 +264,17 @@ def module_symbols(module: Object) -> List[Tuple[str, Object]]:
     :param module: Object of ``struct module *``
     :returns: A list of name, ``Elf_Sym`` pairs
     """
+    try:
+        ks = module.kallsyms
+    except AttributeError:
+        # Prior to 8244062ef1e54 ("modules: fix longstanding /proc/kallsyms vs
+        # module insertion race."), the kallsyms variables were stored directly
+        # on the module object. This commit was introduced in 4.5, but was
+        # backported to some stable kernels too. Fall back to the module object
+        # in cases where kallsyms field isn't available.
+        ks = module
+
     prog = module.prog_
-    ks = module.kallsyms
     num_symtab = ks.num_symtab.value_()
 
     # The symtab field is a pointer, but it points at an array of Elf_Sym
