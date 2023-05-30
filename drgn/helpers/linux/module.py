@@ -3,7 +3,7 @@
 from collections import defaultdict
 from typing import Dict, Iterable, List, NamedTuple, Optional, Tuple, Union, overload
 
-from drgn import IntegerLike, Object, Program, Symbol, SymbolBinding, SymbolKind
+from drgn import IntegerLike, Object, Program, Symbol, SymbolBinding, SymbolKind, cast
 from drgn.helpers.linux.list import list_for_each_entry
 
 __all__ = (
@@ -343,16 +343,48 @@ def module_exports(module: Object) -> List[Tuple[int, str]]:
     :returns: A list of address, name pairs
     """
     values = []
+    prog = module.prog_
 
-    def add_symbols(count: Object, array: Object) -> None:
-        for i in range(count.value_()):
-            symbol = array[i]
-            values.append(
-                (
-                    symbol.value.value_(),
-                    symbol.name.string_().decode("ascii"),
+    ksym = prog.type("struct kernel_symbol")
+    if ksym.has_member("value_offset"):
+        # Handle the case of CONFIG_HAVE_ARCH_PREL32_RELOCATIONS, ever since
+        # 7290d58095712 ("module: use relative references for __ksymtab
+        # entries"), which was introduced in Linux 4.19.
+
+        void_star = prog.type("void *")
+        char_star = prog.type("char *")
+        unsigned_long = prog.type("void *")
+
+        def offset_to_ptr(off: Object) -> Object:
+            # Integer overflow is actually baked into the design of this
+            # function! Some values intentionally overflow, so that they can
+            # refer to a percpu variable. If we used Python integer addition,
+            # the overflow wouldn't happen, and we'd get a value too large to
+            # convert back to drgn types. Instead, do the addition using the
+            # unsigned long type, just like the kernel does. Drgn faithfully
+            # reproduces the overflow, as intended.
+            address = Object(prog, unsigned_long, off.address_)  # type: ignore
+            return cast(void_star, address + off)
+
+        def add_symbols(count: Object, array: Object) -> None:
+            for i in range(count.value_()):
+                symbol = array[i]
+                # See offset_to_ptr
+                value = offset_to_ptr(symbol.value_offset)
+                name_ptr = cast(char_star, offset_to_ptr(symbol.name_offset))
+                values.append((value.value_(), name_ptr.string_().decode("ascii")))
+
+    else:
+
+        def add_symbols(count: Object, array: Object) -> None:
+            for i in range(count.value_()):
+                symbol = array[i]
+                values.append(
+                    (
+                        symbol.value.value_(),
+                        symbol.name.string_().decode("ascii"),
+                    )
                 )
-            )
 
     add_symbols(module.num_syms, module.syms)
     add_symbols(module.num_gpl_syms, module.gpl_syms)
