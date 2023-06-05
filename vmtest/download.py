@@ -43,7 +43,7 @@ from vmtest.githubapi import GitHubApi
 logger = logging.getLogger(__name__)
 
 COMPILER_URL = "https://mirrors.kernel.org/pub/tools/crosstool/"
-VMTEST_GITHUB_RELEASE = ("osandov", "drgn", "vmtest-assets")
+VMTEST_GITHUB_RELEASE = ("brenns10", "drgn", "vmtest-assets")
 
 
 GitHubAsset = Dict[str, Any]
