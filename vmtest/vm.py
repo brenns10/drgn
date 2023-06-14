@@ -9,6 +9,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+from typing import Optional
 
 from util import nproc, out_of_date
 from vmtest.config import HOST_ARCHITECTURE, Kernel
@@ -47,7 +48,7 @@ if [ ! -w /tmp ]; then
 	mount -t tmpfs tmpfs /tmp
 fi
 mkdir /tmp/upper /tmp/work /tmp/merged
-mkdir /tmp/upper/dev /tmp/upper/etc /tmp/upper/mnt
+mkdir /tmp/upper/dev /tmp/upper/etc /tmp/upper/mnt /tmp/upper/io
 mkdir -m 555 /tmp/upper/proc /tmp/upper/sys
 mkdir -m 1777 /tmp/upper/tmp
 if [ -e /tmp/host ]; then
@@ -65,6 +66,7 @@ mkdir /tmp/merged/dev/shm
 mount -t tmpfs -o nosuid,nodev tmpfs /tmp/merged/dev/shm
 mount -t proc -o nosuid,nodev,noexec proc /tmp/merged/proc
 mount -t sysfs -o nosuid,nodev,noexec sys /tmp/merged/sys
+mount -t 9p -o {_9pfs_mount_options},rw host_rw /tmp/merged/io
 # cgroup2 was added in Linux v4.5.
 mount -t cgroup2 -o nosuid,nodev,noexec cgroup2 /tmp/merged/sys/fs/cgroup || true
 # Ideally we'd just be able to create an opaque directory for /tmp on the upper
@@ -183,7 +185,13 @@ class LostVMError(Exception):
     pass
 
 
-def run_in_vm(command: str, kernel: Kernel, root_dir: Path, build_dir: Path) -> int:
+def run_in_vm(
+    command: str,
+    kernel: Kernel,
+    root_dir: Path,
+    build_dir: Path,
+    rw_dir: Optional[Path] = None,
+) -> int:
     qemu_exe = "qemu-system-" + kernel.arch.name
     match = re.search(
         r"QEMU emulator version ([0-9]+(?:\.[0-9]+)*)",
@@ -210,7 +218,7 @@ def run_in_vm(command: str, kernel: Kernel, root_dir: Path, build_dir: Path) -> 
                 file=sys.stderr,
             )
 
-    virtfs_options = "security_model=none,readonly=on"
+    virtfs_options = "security_model=none"
     # multidevs was added in QEMU 4.2.0.
     if qemu_version >= (4, 2):
         virtfs_options += ",multidevs=remap"
@@ -226,6 +234,9 @@ def run_in_vm(command: str, kernel: Kernel, root_dir: Path, build_dir: Path) -> 
 
         init_path = temp_path / "init"
 
+        if not rw_dir:
+            rw_dir = temp_path
+
         if root_dir == Path("/"):
             host_virtfs_args = []
             init = str(init_path.resolve())
@@ -233,7 +244,7 @@ def run_in_vm(command: str, kernel: Kernel, root_dir: Path, build_dir: Path) -> 
         else:
             host_virtfs_args = [
                 "-virtfs",
-                f"local,path=/,mount_tag=host,{virtfs_options}",
+                f"local,path=/,mount_tag=host,readonly=on,{virtfs_options}",
             ]
             init = f'/bin/sh -- -c "/bin/mount -t tmpfs tmpfs /tmp && /bin/mkdir /tmp/host && /bin/mount -t 9p -o {_9pfs_mount_options},ro host /tmp/host && . /tmp/host{init_path.resolve()}"'
             host_dir_prefix = "/host"
@@ -247,9 +258,14 @@ def run_in_vm(command: str, kernel: Kernel, root_dir: Path, build_dir: Path) -> 
                     ),
                     command=shlex.quote(command),
                     kdump_needs_nosmp="" if kvm_args else "export KDUMP_NEEDS_NOSMP=1",
+                    _9pfs_mount_options=_9pfs_mount_options,
                 )
             )
         init_path.chmod(0o755)
+        rw_virtfs_args = [
+            "-virtfs",
+            f"local,path={rw_dir},mount_tag=host_rw,{virtfs_options}",
+        ]
 
         with subprocess.Popen(
             [
@@ -266,8 +282,10 @@ def run_in_vm(command: str, kernel: Kernel, root_dir: Path, build_dir: Path) -> 
                 "-no-reboot",
 
                 "-virtfs",
-                f"local,id=root,path={root_dir},mount_tag=/dev/root,{virtfs_options}",
+                f"local,id=root,path={root_dir},mount_tag=/dev/root,readonly=on,{virtfs_options}",
                 *host_virtfs_args,
+
+                *rw_virtfs_args,
 
                 "-device", "virtio-rng",
 
@@ -357,6 +375,14 @@ if __name__ == "__main__":
         help="directory to use as root directory in VM",
     )
     parser.add_argument(
+        "-w",
+        "--rw-path",
+        metavar="DIR",
+        default=None,
+        type=Path,
+        help="directory to use as /io in VM",
+    )
+    parser.add_argument(
         "command",
         type=str,
         nargs=argparse.REMAINDER,
@@ -378,7 +404,11 @@ if __name__ == "__main__":
 
     try:
         command = " ".join(args.command) if args.command else "sh -i"
-        sys.exit(run_in_vm(command, kernel, args.root_directory, args.directory))
+        sys.exit(
+            run_in_vm(
+                command, kernel, args.root_directory, args.directory, args.rw_path
+            )
+        )
     except LostVMError as e:
         print("error:", e, file=sys.stderr)
         sys.exit(args.lost_status)
