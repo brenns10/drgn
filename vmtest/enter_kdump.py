@@ -42,5 +42,6 @@ with open(f"/lib/modules/{os.uname().release}/vmlinuz", "rb") as kernel:
         errno = ctypes.get_errno()
         raise OSError(errno, os.strerror(errno))
 
-with open("/proc/sysrq-trigger", "w") as f:
-    f.write("c")
+if len(sys.argv) < 2 or sys.argv[1] != "-n":
+    with open("/proc/sysrq-trigger", "w") as f:
+        f.write("c")
