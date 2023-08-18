@@ -877,20 +877,20 @@ static PyObject *Program_symbols(Program *self, PyObject *args)
 	size_t count;
 	if (arg == Py_None) {
 		err = drgn_program_find_symbols_by_name(&self->prog, NULL,
-							&symbols, &count);
+							NULL, &symbols, &count);
 	} else if (PyUnicode_Check(arg)) {
 		const char *name = PyUnicode_AsUTF8(arg);
 		if (!name)
 			return NULL;
 		err = drgn_program_find_symbols_by_name(&self->prog, name,
-							&symbols, &count);
+							NULL, &symbols, &count);
 	} else {
 		struct index_arg address = {};
 		if (!index_converter(arg, &address))
 			return NULL;
 		err = drgn_program_find_symbols_by_address(&self->prog,
 							   address.uvalue,
-							   &symbols, &count);
+							   NULL, &symbols, &count);
 	}
 	if (err)
 		return set_drgn_error(err);
@@ -926,14 +926,14 @@ static PyObject *Program_symbol(Program *self, PyObject *arg)
 		name = PyUnicode_AsUTF8(arg);
 		if (!name)
 			return NULL;
-		err = drgn_program_find_symbol_by_name(&self->prog, name, &sym);
+		err = drgn_program_find_symbol_by_name(&self->prog, name, NULL, &sym);
 	} else {
 		struct index_arg address = {};
 
 		if (!index_converter(arg, &address))
 			return NULL;
 		err = drgn_program_find_symbol_by_address(&self->prog,
-							  address.uvalue, &sym);
+							  address.uvalue, NULL, &sym);
 	}
 	if (err)
 		return set_drgn_error(err);
