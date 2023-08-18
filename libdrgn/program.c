@@ -1741,31 +1741,6 @@ drgn_program_find_object(struct drgn_program *prog, const char *name,
 				      ret);
 }
 
-bool drgn_program_find_symbol_by_address_internal(struct drgn_program *prog,
-						  uint64_t address,
-						  Dwfl_Module *module,
-						  struct drgn_symbol *ret)
-{
-	if (!module) {
-		if (prog->dbinfo) {
-			module = dwfl_addrmodule(prog->dbinfo->dwfl, address);
-			if (!module)
-				return false;
-		} else {
-			return false;
-		}
-	}
-
-	GElf_Off offset;
-	GElf_Sym elf_sym;
-	const char *name = dwfl_module_addrinfo(module, address, &offset,
-						&elf_sym, NULL, NULL, NULL);
-	if (!name)
-		return false;
-	drgn_symbol_from_elf(name, address - offset, &elf_sym, ret);
-	return true;
-}
-
 struct drgn_error *drgn_error_symbol_not_found(uint64_t address)
 {
 	return drgn_error_format(DRGN_ERROR_LOOKUP,
@@ -2047,6 +2022,31 @@ drgn_program_find_symbol_by_address(struct drgn_program *prog, uint64_t address,
 
 	*ret = drgn_symbol_result_builder_single(&result);
 	return err;
+}
+
+bool drgn_program_find_symbol_by_address_internal(struct drgn_program *prog,
+						  uint64_t address,
+						  Dwfl_Module *module,
+						  struct drgn_symbol *ret)
+{
+	if (!module) {
+		if (prog->dbinfo) {
+			module = dwfl_addrmodule(prog->dbinfo->dwfl, address);
+			if (!module)
+				return false;
+		} else {
+			return false;
+		}
+	}
+
+	GElf_Off offset;
+	GElf_Sym elf_sym;
+	const char *name = dwfl_module_addrinfo(module, address, &offset,
+						&elf_sym, NULL, NULL, NULL);
+	if (!name)
+		return false;
+	drgn_symbol_from_elf(name, address - offset, &elf_sym, ret);
+	return true;
 }
 
 LIBDRGN_PUBLIC struct drgn_error *
