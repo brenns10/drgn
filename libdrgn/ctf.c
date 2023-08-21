@@ -950,7 +950,7 @@ drgn_ctf_find_object(const char *name, size_t name_len,
 	if (flags & DRGN_FIND_OBJECT_VARIABLE) {
 		uint64_t addr;
 		struct drgn_symbol *sym = NULL;
-		err = drgn_program_find_symbol_by_name(info->prog, name, &sym);
+		err = drgn_program_find_symbol_by_name(info->prog, name, NULL, &sym);
 		if (err)
 			return err;
 		addr = sym->address;
