@@ -264,6 +264,7 @@ drgn_program_set_core_dump_fd_internal(struct drgn_program *prog, int fd,
 	const char *vmcoreinfo_note = NULL;
 	size_t vmcoreinfo_size = 0;
 	bool have_nt_taskstruct = false, is_proc_kcore;
+	bool have_vmcoreinfo = prog->vmcoreinfo.raw;
 
 	prog->core_fd = fd;
 	err = has_kdump_signature(prog, path, &is_kdump);
@@ -373,6 +374,7 @@ drgn_program_set_core_dump_fd_internal(struct drgn_program *prog, int fd,
 					 * may be valid.
 					 */
 					have_phys_addrs = true;
+					have_vmcoreinfo = true;
 				} else if (nhdr.n_namesz == sizeof("QEMU") &&
 					   memcmp(name, "QEMU",
 						  sizeof("QEMU")) == 0) {
@@ -399,7 +401,7 @@ drgn_program_set_core_dump_fd_internal(struct drgn_program *prog, int fd,
 		is_proc_kcore = false;
 	}
 
-	if (vmcoreinfo_note && !is_proc_kcore) {
+	if (have_vmcoreinfo && !is_proc_kcore) {
 		char *env;
 
 		/* Use libkdumpfile for ELF vmcores if it was requested. */
@@ -420,7 +422,7 @@ drgn_program_set_core_dump_fd_internal(struct drgn_program *prog, int fd,
 	}
 
 	bool pgtable_reader =
-		(is_proc_kcore || vmcoreinfo_note) &&
+		(is_proc_kcore || have_vmcoreinfo) &&
 		prog->platform.arch->linux_kernel_pgtable_iterator_next;
 	if (pgtable_reader) {
 		/*
@@ -481,7 +483,7 @@ drgn_program_set_core_dump_fd_internal(struct drgn_program *prog, int fd,
 		 * all zeroes and memory that was excluded by makedumpfile for
 		 * another reason, so we're forced to always return zeroes.
 		 */
-		prog->file_segments[j].zerofill = vmcoreinfo_note && !is_proc_kcore;
+		prog->file_segments[j].zerofill = have_vmcoreinfo && !is_proc_kcore;
 		err = drgn_program_add_memory_segment(prog, phdr->p_vaddr,
 						      phdr->p_memsz,
 						      drgn_read_memory_file,
@@ -550,7 +552,7 @@ drgn_program_set_core_dump_fd_internal(struct drgn_program *prog, int fd,
 			j++;
 		}
 	}
-	if (vmcoreinfo_note) {
+	if (vmcoreinfo_note && !prog->vmcoreinfo.raw) {
 		err = drgn_program_parse_vmcoreinfo(prog, vmcoreinfo_note,
 						    vmcoreinfo_size);
 		if (err)
@@ -558,7 +560,7 @@ drgn_program_set_core_dump_fd_internal(struct drgn_program *prog, int fd,
 	}
 
 	if (is_proc_kcore) {
-		if (!vmcoreinfo_note) {
+		if (!have_vmcoreinfo) {
 			err = read_vmcoreinfo_fallback(prog);
 			if (err)
 				goto out_segments;
@@ -568,7 +570,7 @@ drgn_program_set_core_dump_fd_internal(struct drgn_program *prog, int fd,
 		                DRGN_PROGRAM_IS_LOCAL);
 		elf_end(prog->core);
 		prog->core = NULL;
-	} else if (vmcoreinfo_note) {
+	} else if (have_vmcoreinfo) {
 		prog->flags |= DRGN_PROGRAM_IS_LINUX_KERNEL;
 	} else if (have_qemu_note) {
 		err = drgn_error_create(DRGN_ERROR_INVALID_ARGUMENT,
