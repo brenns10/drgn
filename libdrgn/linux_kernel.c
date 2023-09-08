@@ -38,7 +38,8 @@ struct drgn_error *read_memory_via_pgtable(void *buf, uint64_t address,
 					   void *arg, bool physical)
 {
 	struct drgn_program *prog = arg;
-	return linux_helper_read_vm(prog, prog->vmcoreinfo.swapper_pg_dir,
+	uint64_t swapper_pg_dir_phys = prog->vmcoreinfo.swapper_pg_dir - 0xffffffff80000000 + prog->vmcoreinfo.phys_base;
+	return linux_helper_read_vm(prog, swapper_pg_dir_phys,
 				    address, buf, count);
 }
 
