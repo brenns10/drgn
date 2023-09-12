@@ -19,7 +19,7 @@ drgn_type_from_ctf_id(struct drgn_ctf_info *info, ctf_dict_t *dict,
                       bool in_bitfield);
 
 static struct drgn_error *
-drgn_type_from_ctf(enum drgn_type_kind kind, const char *name,
+drgn_type_from_ctf(uint64_t kinds, const char *name,
 		   size_t name_len, const char *filename,
 		   void *arg, struct drgn_qualified_type *ret);
 
@@ -228,7 +228,7 @@ drgn_enum_from_ctf(struct drgn_ctf_info *info, ctf_dict_t *dict,
 		name = NULL;
 
 	// TODO: don't lookup "int", instead build an integer type to match.
-	arg.err = drgn_type_from_ctf(DRGN_TYPE_INT, "int", 3, NULL, info,
+	arg.err = drgn_type_from_ctf(1 << DRGN_TYPE_INT, "int", 3, NULL, info,
 				 &compatible_type);
 	if (arg.err)
 		return arg.err;
@@ -808,7 +808,7 @@ drgn_ctf_find_type_name_all_dicts(struct drgn_ctf_info *info, const char *name,
 }
 
 static struct drgn_error *
-drgn_type_from_ctf(enum drgn_type_kind kind, const char *name,
+drgn_type_from_ctf(uint64_t kinds, const char *name,
 		   size_t name_len, const char *filename,
 		   void *arg, struct drgn_qualified_type *ret)
 {
@@ -817,6 +817,13 @@ drgn_type_from_ctf(enum drgn_type_kind kind, const char *name,
 	ctf_id_t id;
 	struct drgn_ctf_info *info = arg;
 	struct drgn_error *err = NULL;
+	int kind_idx;
+	enum drgn_type_kind kind_special[] = {
+		DRGN_TYPE_STRUCT,
+		DRGN_TYPE_UNION,
+		DRGN_TYPE_ENUM,
+		0,
+	};
 
 	/*
 	 * When filename is provided, we can resolve to a CTF dictionary.
@@ -824,23 +831,42 @@ drgn_type_from_ctf(enum drgn_type_kind kind, const char *name,
 	 */
 	if (filename) {
 		err = drgn_ctf_get_dict(info, filename, &dict);
+	/*
+	 * Each step of the loop is a different tag type:
+	 * "struct x", "union x", "enum x", and finally no tag.
+	 * CTF lookup is done with the tag name, so we need to search
+	 * once per possibility, if each possibility is present in kinds.
+	 */
+	for (kind_idx = 0; kind_idx < sizeof(kind_special)/sizeof(kind_special[0]);
+	     kind_idx++) {
+		enum drgn_type_kind this_kind = kind_special[kind_idx];
+		if (this_kind && (kinds & (1 << this_kind))) {
+			kinds &= ~this_kind;
+			err = format_type_name(this_kind, name, name_len, &name_copy);
+		} else {
+			err = format_type_name(0, name, name_len, &name_copy);
+		}
 		if (err)
 			return err;
-	}
 
-	err = format_type_name(kind, name, name_len, &name_copy);
-	if (err)
-		return err;
+		if (dict) {
+			err = drgn_ctf_lookup_by_name(info, dict, name_copy,
+						      &id, &dict);
+		} else {
+			err = drgn_ctf_find_type_name_all_dicts(info, name_copy,
+								&id, &dict);
+		}
+		free(name_copy);
+		name_copy = NULL;
 
-	if (dict) {
-		err = drgn_ctf_lookup_by_name(info, dict, name_copy, &id, &dict);
-	} else {
-		err = drgn_ctf_find_type_name_all_dicts(info, name_copy, &id, &dict);
+		if (!err)
+			return drgn_type_from_ctf_id(info, dict, id, ret,
+						     false);
+		else if (err != &drgn_not_found)
+			return err;
+		err = NULL;
 	}
-	free(name_copy);
-	if (err)
-		return err;
-	return drgn_type_from_ctf_id(info, dict, id, ret, false);
+	return &drgn_not_found;
 }
 
 struct drgn_error *
