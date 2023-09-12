@@ -831,6 +831,13 @@ drgn_type_from_ctf(uint64_t kinds, const char *name,
 	 */
 	if (filename) {
 		err = drgn_ctf_get_dict(info, filename, &dict);
+		if (err) {
+			drgn_error_destroy(err);
+			err = NULL;
+			filename = NULL;
+		}
+	}
+
 	/*
 	 * Each step of the loop is a different tag type:
 	 * "struct x", "union x", "enum x", and finally no tag.
@@ -960,12 +967,19 @@ drgn_ctf_find_object(const char *name, size_t name_len,
 	 * TODO: it may be better to have some way to specify a "default" CTF
 	 * dictionary. When filename is not provided, we would search that dict
 	 * first, and failing that, we'd search the others.
+	 * TODO: of course, filename is not the same thing as module. In order
+	 * to not break Drgn code which writes filenames here, we need to ignore
+	 * errors opening non-existent CTF dictionaries and fall back to a
+	 * search of all dicts.
 	 */
 	name_copy = strndup(name, name_len);
 	if (filename) {
 		err = drgn_ctf_get_dict(info, filename, &dict);
-		if (err)
-			goto out_free;
+		if (err) {
+			drgn_error_destroy(err);
+			err = NULL;
+			filename = NULL;
+		}
 	}
 
 	if (flags & DRGN_FIND_OBJECT_CONSTANT) {
