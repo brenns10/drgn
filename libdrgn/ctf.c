@@ -808,27 +808,20 @@ static struct drgn_error *
 drgn_ctf_find_var(struct drgn_ctf_info *info, const char *name, ctf_dict_t *dict,
 		  uint64_t addr, struct drgn_object *ret)
 {
-	int errnum;
 	struct drgn_qualified_type qt = {0};
 	struct drgn_error *err;
 	ctf_id_t id;
 
 	id = ctf_lookup_variable(dict, name);
-	if (id == CTF_ERR) {
-		errnum = get_ctf_errno(dict);
-		/*
-		 * Reading the libctf source code, there really shouldn't be any
-		 * case where ECTF_NEXT_END is returned here... but that's exactly
-		 * what I've observed. So handle both NOTYPEDAT and NEXT_END as
-		 * not found errors.
-		 */
-		if (errnum == ECTF_NOTYPEDAT || errnum == ECTF_NEXT_END
-		    || errnum == ECTF_NOTYPE)
-			err = &drgn_not_found;
-		else
-			err = drgn_error_ctf(errnum);
-		return err;
-	}
+
+	/* Technically, it could be possible for libctf to return an error
+	 * other than a lookup error. Practically, this doesn't happen, and
+	 * due to some bugs related to ctf_errno() with CTF lookup functions,
+	 * reliably distinguishing this case is impossible. Just assume the
+	 * CTF error was a lookup error.
+	 */
+	if (id == CTF_ERR)
+		return &drgn_not_found;
 
 	err = drgn_type_from_ctf_id(info, dict, id, &qt, NULL);
 	if (err)
