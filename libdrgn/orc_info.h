@@ -62,9 +62,11 @@ struct drgn_module_orc_info {
 	unsigned int num_entries;
 	/** Version of the ORC format. See @ref orc.h. */
 	int version;
+	/** Whether a byte swap is necessary when processing entries. */
+	bool bswap;
 };
 
-void drgn_module_orc_info_deinit(struct drgn_module *module);
+void drgn_module_orc_info_deinit(struct drgn_module_orc_info *orc);
 
 struct drgn_error *
 drgn_module_find_orc_cfi(struct drgn_module *module, uint64_t pc,
