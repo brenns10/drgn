@@ -15,9 +15,11 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "binary_search_tree.h"
 #include "cfi.h"
 
 struct drgn_module;
+struct drgn_program;
 
 /**
  * @ingroup DebugInfo
@@ -87,6 +89,30 @@ struct drgn_error *
 drgn_module_find_orc_cfi(struct drgn_module *module, uint64_t pc,
 			 struct drgn_cfi_row **row_ret, bool *interrupted_ret,
 			 drgn_register_number *ret_addr_regno_ret);
+
+
+DEFINE_BINARY_SEARCH_TREE_TYPE(drgn_orc_map_tree, struct drgn_orc_map);
+
+struct drgn_orc_info {
+	struct drgn_orc_map_tree tree;
+	int version;
+};
+
+void drgn_orc_info_init(struct drgn_orc_info *orc);
+void drgn_orc_info_destroy(struct drgn_orc_info *orc);
+
+
+struct drgn_error *
+drgn_orc_info_insert(struct drgn_program *prog, uint64_t pc_start, uint64_t pc_end,
+		     uint64_t num_entries, uint64_t unwind_ip_ptr,
+		     uint64_t unwind_entries_ptr);
+
+struct drgn_error *linux_kernel_load_vmlinux_orc(struct drgn_program *prog);
+
+struct drgn_error *
+drgn_find_builtin_orc_cfi(struct drgn_program *prog, uint64_t pc,
+			  struct drgn_cfi_row **row_ret, bool *interrupted_ret,
+			  drgn_register_number *ret_addr_regno_ret);
 
 /** @} */
 
