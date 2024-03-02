@@ -126,6 +126,11 @@ libdrgnimpl_la_CFLAGS += $(libkdumpfile_CFLAGS)
 libdrgnimpl_la_LIBADD += $(libkdumpfile_LIBS)
 endif
 
+if WITH_LIBCTF
+libdrgnimpl_la_SOURCES += ctf.c drgn_ctf.h
+libdrgnimpl_la_LIBADD += $(CTF_LIBS)
+endif
+
 %: %.strswitch build-aux/gen_strswitch.py build-aux/codegen_utils.py
 	$(AM_V_GEN)$(PYTHON) $(word 2, $^) -o $@ $<
 

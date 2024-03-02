@@ -111,6 +111,7 @@ struct drgn_program {
 	struct drgn_object_index oindex;
 	struct drgn_debug_info dbinfo;
 	struct drgn_symbol_finder *symbol_finders;
+	struct drgn_ctf_info *ctf;
 
 	/*
 	 * Program information.

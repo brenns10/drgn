@@ -20,6 +20,7 @@
 
 #include "cleanup.h"
 #include "debug_info.h"
+#include "drgn_ctf.h"
 #include "error.h"
 #include "helpers.h"
 #include "io.h"
@@ -162,6 +163,7 @@ void drgn_program_deinit(struct drgn_program *prog)
 		close(prog->core_fd);
 
 	drgn_debug_info_deinit(&prog->dbinfo);
+	drgn_ctf_destroy(prog->ctf);
 }
 
 LIBDRGN_PUBLIC struct drgn_error *
