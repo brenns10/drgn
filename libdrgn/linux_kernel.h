@@ -26,6 +26,9 @@ struct drgn_error *read_vmcoreinfo_fallback(struct drgn_program *prog);
 struct drgn_error *
 linux_kernel_report_debug_info(struct drgn_debug_info_load_state *load);
 
+struct drgn_error *
+linux_kernel_load_builtin_orc(struct drgn_program *prog);
+
 #define KDUMP_SIGNATURE "KDUMP   "
 #define KDUMP_SIG_LEN (sizeof(KDUMP_SIGNATURE) - 1)
 
