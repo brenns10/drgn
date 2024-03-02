@@ -149,7 +149,7 @@ static void drgn_module_destroy(struct drgn_module *module)
 {
 	if (module) {
 		drgn_error_destroy(module->err);
-		drgn_module_orc_info_deinit(module);
+		drgn_module_orc_info_deinit(&module->orc);
 		drgn_module_dwarf_info_deinit(module);
 		elf_end(module->elf);
 		if (module->fd != -1)
@@ -2253,7 +2253,7 @@ drgn_module_find_cfi(struct drgn_program *prog, struct drgn_module *module,
 			module->parsed_debug_frame = true;
 		}
 		if (!module->parsed_orc) {
-			err = drgn_module_parse_orc(module);
+			err = drgn_module_parse_orc(module, &module->orc);
 			if (err)
 				return err;
 			module->parsed_orc = true;

@@ -20,36 +20,36 @@
 
 DEFINE_VECTOR(uint64_range_vector, struct uint64_range);
 
-void drgn_module_orc_info_deinit(struct drgn_module *module)
+void drgn_module_orc_info_deinit(struct drgn_module_orc_info *orc)
 {
-	free(module->orc.entries);
-	free(module->orc.pc_offsets);
-	free(module->orc.preferred);
+	free(orc->entries);
+	free(orc->pc_offsets);
+	free(orc->preferred);
 }
 
 // Getters for "raw" ORC information, i.e., before it is aligned, byte swapped,
 // and normalized to the latest version.
-static inline uint64_t drgn_raw_orc_pc(struct drgn_module *module,
+static inline uint64_t drgn_raw_orc_pc(struct drgn_module_orc_info *orc,
 				       unsigned int i)
 {
 	int32_t offset;
-	memcpy(&offset, &module->orc.pc_offsets[i], sizeof(offset));
-	if (drgn_elf_file_bswap(module->debug_file))
+	memcpy(&offset, &orc->pc_offsets[i], sizeof(offset));
+	if (orc->bswap)
 		offset = bswap_32(offset);
-	return module->orc.pc_base + UINT64_C(4) * i + offset;
+	return orc->pc_base + UINT64_C(4) * i + offset;
 }
 
 static bool
-drgn_raw_orc_entry_is_terminator(struct drgn_module *module, unsigned int i)
+drgn_raw_orc_entry_is_terminator(struct drgn_module_orc_info *orc, unsigned int i)
 {
 	uint16_t flags;
-	memcpy(&flags, &module->orc.entries[i].flags, sizeof(flags));
-	if (drgn_elf_file_bswap(module->debug_file))
+	memcpy(&flags, &orc->entries[i].flags, sizeof(flags));
+	if (orc->bswap)
 		flags = bswap_16(flags);
-	if (module->orc.version >= 3) {
+	if (orc->version >= 3) {
 		// orc->type == ORC_TYPE_UNDEFINED
 		return (flags & 0x700) == 0;
-	} else if (module->orc.version == 2) {
+	} else if (orc->version == 2) {
 		// orc->sp_reg == ORC_REG_UNDEFINED && !orc->end
 		return (flags & 0x80f) == 0;
 	} else {
@@ -59,11 +59,11 @@ drgn_raw_orc_entry_is_terminator(struct drgn_module *module, unsigned int i)
 }
 
 static bool
-drgn_raw_orc_entry_is_preferred(struct drgn_module *module, unsigned int i)
+drgn_raw_orc_entry_is_preferred(struct drgn_module_orc_info *orc, unsigned int i)
 {
 	uint16_t flags;
-	memcpy(&flags, &module->orc.entries[i].flags, sizeof(flags));
-	if (drgn_elf_file_bswap(module->debug_file))
+	memcpy(&flags, &orc->entries[i].flags, sizeof(flags));
+	if (orc->bswap)
 		flags = bswap_16(flags);
 	// ORC_REG_SP_INDIRECT is used for the stack switching pattern used in
 	// the Linux kernel's call_on_stack()/call_on_irqstack() macros. See
@@ -78,12 +78,12 @@ drgn_raw_orc_entry_is_preferred(struct drgn_module *module, unsigned int i)
 
 static int compare_orc_entries(const void *a, const void *b, void *arg)
 {
-	struct drgn_module *module = arg;
+	struct drgn_module_orc_info *orc = arg;
 	unsigned int index_a = *(unsigned int *)a;
 	unsigned int index_b = *(unsigned int *)b;
 
-	uint64_t pc_a = drgn_raw_orc_pc(module, index_a);
-	uint64_t pc_b = drgn_raw_orc_pc(module, index_b);
+	uint64_t pc_a = drgn_raw_orc_pc(orc, index_a);
+	uint64_t pc_b = drgn_raw_orc_pc(orc, index_b);
 	if (pc_a < pc_b)
 		return -1;
 	else if (pc_a > pc_b)
@@ -93,8 +93,8 @@ static int compare_orc_entries(const void *a, const void *b, void *arg)
 	 * If two entries have the same PC, then one is probably a "terminator"
 	 * at the end of a compilation unit. Prefer the real entry.
 	 */
-	return (drgn_raw_orc_entry_is_terminator(module, index_b)
-		- drgn_raw_orc_entry_is_terminator(module, index_a));
+	return (drgn_raw_orc_entry_is_terminator(orc, index_b)
+		- drgn_raw_orc_entry_is_terminator(orc, index_a));
 }
 
 static unsigned int keep_orc_entry(struct drgn_module *module,
@@ -151,15 +151,15 @@ remove_fdes_from_orc(struct drgn_module *module, unsigned int *indices,
 	unsigned int num_entries = *num_entriesp;
 	unsigned int new_num_entries = 0;
 
-	uint64_t start_pc = drgn_raw_orc_pc(module, 0);
+	uint64_t start_pc = drgn_raw_orc_pc(&module->orc, 0);
 	uint64_t end_pc;
 	for (unsigned int i = 0; i < num_entries; i++, start_pc = end_pc) {
 		if (i < num_entries - 1)
-			end_pc = drgn_raw_orc_pc(module, i + 1);
+			end_pc = drgn_raw_orc_pc(&module->orc, i + 1);
 		else
 			end_pc = UINT64_MAX;
 
-		if (drgn_raw_orc_entry_is_preferred(module, i)) {
+		if (drgn_raw_orc_entry_is_preferred(&module->orc, i)) {
 			struct uint64_range *range =
 				uint64_range_vector_append_entry(preferred);
 			if (!range)
@@ -214,11 +214,8 @@ remove_fdes_from_orc(struct drgn_module *module, unsigned int *indices,
 	return NULL;
 }
 
-static int orc_version_from_header(Elf_Data *orc_header)
+static int orc_version_from_header(void *buffer)
 {
-	if (orc_header->d_size != 20)
-		return -1;
-
 	// Known version identifiers in .orc_header. These can be generated in
 	// the kernel source tree with:
 	// sh ./scripts/orc_hash.sh < arch/x86/include/asm/orc_types.h | sed -e 's/^#define ORC_HASH //' -e 's/,/, /g'
@@ -236,9 +233,9 @@ static int orc_version_from_header(Elf_Data *orc_header)
 		0x17, 0xf8, 0xf7, 0x97, 0x83, 0xca, 0x98, 0x5c, 0x2c, 0x51,
 	};
 
-	if (memcmp(orc_header->d_buf, orc_hash_6_4, 20) == 0)
+	if (memcmp(buffer, orc_hash_6_4, 20) == 0)
 		return 3;
-	else if (memcmp(orc_header->d_buf, orc_hash_6_3, 20) == 0)
+	else if (memcmp(buffer, orc_hash_6_3, 20) == 0)
 		return 2;
 	return -1;
 }
@@ -314,7 +311,10 @@ static struct drgn_error *drgn_read_orc_sections(struct drgn_module *module)
 		err = read_elf_section(orc_header_scn, &orc_header);
 		if (err)
 			return err;
-		module->orc.version = orc_version_from_header(orc_header);
+
+		module->orc.version = -1;
+		if (orc_header->d_size == 20)
+			module->orc.version = orc_version_from_header(orc_header->d_buf);
 		if (module->orc.version < 0) {
 			return drgn_error_create(DRGN_ERROR_OTHER,
 						 "unrecognized .orc_header");
@@ -348,6 +348,7 @@ static struct drgn_error *drgn_read_orc_sections(struct drgn_module *module)
 
 	module->orc.pc_offsets = orc_unwind_ip->d_buf;
 	module->orc.entries = orc_unwind->d_buf;
+	module->orc.bswap = drgn_elf_file_bswap(module->debug_file);
 
 	return NULL;
 }
@@ -360,11 +361,12 @@ static inline void drgn_module_clear_orc(struct drgn_module **modulep)
 	}
 }
 
-struct drgn_error *drgn_module_parse_orc(struct drgn_module *module)
+struct drgn_error *drgn_module_parse_orc(struct drgn_module *module,
+					 struct drgn_module_orc_info *orc)
 {
-	struct drgn_error *err;
+	struct drgn_error *err = NULL;
 
-	if (module->debug_file->platform.arch->arch != DRGN_ARCH_X86_64)
+	if (module && module->debug_file->platform.arch->arch != DRGN_ARCH_X86_64)
 		return NULL;
 
 	// pc_offsets and entries point to the Elf_Data buffers until we're
@@ -391,9 +393,9 @@ struct drgn_error *drgn_module_parse_orc(struct drgn_module *module)
 	 * it if necessary.
 	 */
 	for (unsigned int i = 1; i < num_entries; i++) {
-		if (compare_orc_entries(&indices[i - 1], &indices[i], module) > 0) {
+		if (compare_orc_entries(&indices[i - 1], &indices[i], orc) > 0) {
 			qsort_arg(indices, num_entries, sizeof(indices[0]),
-				  compare_orc_entries, module);
+				  compare_orc_entries, orc);
 			break;
 		}
 	}
@@ -401,9 +403,11 @@ struct drgn_error *drgn_module_parse_orc(struct drgn_module *module)
 	_cleanup_(uint64_range_vector_deinit)
 		struct uint64_range_vector preferred = VECTOR_INIT;
 
-	err = remove_fdes_from_orc(module, indices, &preferred, &num_entries);
-	if (err)
-		return err;
+	if (module) {
+		err = remove_fdes_from_orc(module, indices, &preferred, &num_entries);
+		if (err)
+			return err;
+	}
 
 	_cleanup_free_ int32_t *pc_offsets =
 		malloc_array(num_entries, sizeof(pc_offsets[0]));
@@ -413,16 +417,15 @@ struct drgn_error *drgn_module_parse_orc(struct drgn_module *module)
 		malloc_array(num_entries, sizeof(entries[0]));
 	if (!entries)
 		return &drgn_enomem;
-	const int32_t *orig_offsets = module->orc.pc_offsets;
-	const struct drgn_orc_entry *orig_entries = module->orc.entries;
-	const bool bswap = drgn_elf_file_bswap(module->debug_file);
-	const int version = module->orc.version;
+	const int32_t *orig_offsets = orc->pc_offsets;
+	const struct drgn_orc_entry *orig_entries = orc->entries;
+	const int version = orc->version;
 	for (unsigned int i = 0; i < num_entries; i++) {
 		unsigned int index = indices[i];
 		int32_t offset;
 		memcpy(&offset, &orig_offsets[index], sizeof(offset));
 		memcpy(&entries[i], &orig_entries[index], sizeof(entries[i]));
-		if (bswap) {
+		if (orc->bswap) {
 			offset = bswap_32(offset);
 			entries[i].sp_offset = bswap_16(entries[i].sp_offset);
 			entries[i].bp_offset = bswap_16(entries[i].bp_offset);
@@ -469,9 +472,9 @@ struct drgn_error *drgn_module_parse_orc(struct drgn_module *module)
 	uint64_range_vector_shrink_to_fit(&preferred);
 	uint64_range_vector_steal(&preferred, &module->orc.preferred,
 				  &module->orc.num_preferred);
-	module->orc.pc_offsets = no_cleanup_ptr(pc_offsets);
-	module->orc.entries = no_cleanup_ptr(entries);
-	module->orc.num_entries = num_entries;
+	orc->pc_offsets = no_cleanup_ptr(pc_offsets);
+	orc->entries = no_cleanup_ptr(entries);
+	orc->num_entries = num_entries;
 	clear = NULL;
 	return NULL;
 }
@@ -487,21 +490,20 @@ bool drgn_module_should_prefer_orc_cfi(struct drgn_module *module, uint64_t pc)
 	return i > 0 && module->orc.preferred[i - 1].end > unbiased_pc;
 }
 
-static inline uint64_t drgn_orc_pc(struct drgn_module *module, unsigned int i)
+static inline uint64_t drgn_orc_pc(struct drgn_module_orc_info *orc, unsigned int i)
 {
-	return module->orc.pc_base + UINT64_C(4) * i + module->orc.pc_offsets[i];
+	return orc->pc_base + UINT64_C(4) * i + orc->pc_offsets[i];
 }
 
-struct drgn_error *
-drgn_module_find_orc_cfi(struct drgn_module *module, uint64_t pc,
-			 struct drgn_cfi_row **row_ret, bool *interrupted_ret,
-			 drgn_register_number *ret_addr_regno_ret)
+static struct drgn_error *
+drgn_find_orc_cfi(struct drgn_module_orc_info *orc, uint64_t pc,
+		  struct drgn_cfi_row **row_ret, bool *interrupted_ret,
+		  drgn_register_number *ret_addr_regno_ret)
 {
-	uint64_t unbiased_pc = pc - module->debug_file_bias;
-	#define less_than_orc_pc(a, b)	\
-		(*(a) < drgn_orc_pc(module, (b) - module->orc.pc_offsets))
-	size_t i = binary_search_gt(module->orc.pc_offsets,
-				    module->orc.num_entries, &unbiased_pc,
+
+	#define less_than_orc_pc(a, b) \
+		(*(a) < drgn_orc_pc(orc, (b) - orc->pc_offsets))
+	size_t i = binary_search_gt(orc->pc_offsets, orc->num_entries, &pc,
 				    less_than_orc_pc);
 	#undef less_than_orc_pc
 	// We can tell when the program counter is below the minimum program
@@ -510,6 +512,17 @@ drgn_module_find_orc_cfi(struct drgn_module *module, uint64_t pc,
 	// addresses beyond the max will fall into the last entry.
 	if (i == 0)
 		return &drgn_not_found;
-	return drgn_orc_to_cfi_x86_64(&module->orc.entries[i - 1], row_ret,
-				      interrupted_ret, ret_addr_regno_ret);
+
+	return drgn_orc_to_cfi_x86_64(&orc->entries[i - 1], row_ret, interrupted_ret,
+				      ret_addr_regno_ret);
+}
+
+struct drgn_error *
+drgn_module_find_orc_cfi(struct drgn_module *module, uint64_t pc,
+			 struct drgn_cfi_row **row_ret, bool *interrupted_ret,
+			 drgn_register_number *ret_addr_regno_ret)
+{
+	uint64_t unbiased_pc = pc - module->debug_file_bias;
+	return drgn_find_orc_cfi(&module->orc, unbiased_pc, row_ret,
+				 interrupted_ret, ret_addr_regno_ret);
 }
