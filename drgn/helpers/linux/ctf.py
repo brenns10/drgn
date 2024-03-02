@@ -14,6 +14,7 @@ from typing import Optional
 from _drgn import _linux_helper_load_ctf
 from drgn import Program
 from drgn.helpers.linux.kallsyms import make_kallsyms_vmlinux_finder
+from drgn.helpers.linux.module import ModuleSymbolFinder
 
 __all__ = ("load_ctf",)
 
@@ -55,3 +56,6 @@ def load_ctf(
     if use_kallsyms:
         finder = make_kallsyms_vmlinux_finder(prog)
         prog.add_symbol_finder(finder)  # type: ignore
+
+        module_finder = ModuleSymbolFinder(prog)
+        prog.add_symbol_finder(module_finder)
