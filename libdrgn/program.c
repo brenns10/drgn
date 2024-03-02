@@ -1784,9 +1784,7 @@ drgn_program_find_object(struct drgn_program *prog, const char *name,
 
 struct drgn_error *drgn_error_symbol_not_found(uint64_t address)
 {
-	return drgn_error_format(DRGN_ERROR_LOOKUP,
-				 "could not find symbol containing 0x%" PRIx64,
-				 address);
+	return &drgn_not_found;
 }
 
 static struct drgn_error *
@@ -1888,8 +1886,7 @@ drgn_program_find_symbol_by_name(struct drgn_program *prog,
 	}
 
 	if (!drgn_symbol_result_builder_count(&builder))
-		return drgn_error_format(DRGN_ERROR_LOOKUP,
-					 "could not find symbol with name '%s'", name);
+		return &drgn_not_found;
 
 	*ret = drgn_symbol_result_builder_single(&builder);
 	return err;
