@@ -4,6 +4,7 @@
 #include "drgnpy.h"
 #include "../helpers.h"
 #include "../program.h"
+#include "../linux_kernel.h"
 #include "../drgn_ctf.h"
 
 PyObject *drgnpy_linux_helper_direct_mapping_offset(PyObject *self, PyObject *arg)
@@ -299,4 +300,22 @@ PyObject *drgnpy_linux_helper_load_ctf(PyObject *self, PyObject *args,
 			"--with-libctf to enable");
 	return NULL;
 #endif // WITH_LIBCTF
+}
+
+PyObject *drgnpy_linux_helper_load_orc(PyObject *self, PyObject *args,
+				       PyObject *kwds)
+
+{
+	static char *keywords[] = {"prog", NULL};
+	Program *prog;
+	if (!PyArg_ParseTupleAndKeywords(args, kwds, "O!:load_builtin_orc",
+					 keywords, &Program_type, &prog))
+		return NULL;
+
+	struct drgn_error *err = linux_kernel_load_builtin_orc(&prog->prog);
+	if (err) {
+		set_drgn_error(err);
+		return NULL;
+	}
+	return Py_None;
 }
