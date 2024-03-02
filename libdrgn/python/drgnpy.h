@@ -378,5 +378,7 @@ DrgnObject *drgnpy_linux_helper_pid_task(PyObject *self, PyObject *args,
 DrgnObject *drgnpy_linux_helper_find_task(PyObject *self, PyObject *args);
 PyObject *drgnpy_linux_helper_kaslr_offset(PyObject *self, PyObject *arg);
 PyObject *drgnpy_linux_helper_pgtable_l5_enabled(PyObject *self, PyObject *arg);
+PyObject *drgnpy_linux_helper_load_ctf(PyObject *self, PyObject *args,
+				       PyObject *kwds);
 
 #endif /* DRGNPY_H */

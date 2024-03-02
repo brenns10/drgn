@@ -184,6 +184,8 @@ static PyMethodDef drgn_methods[] = {
 	 METH_O},
 	{"_linux_helper_pgtable_l5_enabled",
 	 drgnpy_linux_helper_pgtable_l5_enabled, METH_O},
+	{"_linux_helper_load_ctf", (PyCFunction)drgnpy_linux_helper_load_ctf,
+	 METH_VARARGS | METH_KEYWORDS},
 	{},
 };
 
