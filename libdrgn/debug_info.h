@@ -153,6 +153,8 @@ struct drgn_debug_info {
 	struct c_string_set module_names;
 	/** DWARF debugging information. */
 	struct drgn_dwarf_info dwarf;
+	/** ORC mappings, when no ELF files are available. */
+	struct drgn_orc_info orc;
 };
 
 /** Initialize a @ref drgn_debug_info. */
