@@ -2716,3 +2716,6 @@ def _linux_helper_load_proc_kallsyms(
     """
 
 def _linux_helper_load_builtin_kallsyms(prog: Program) -> SymbolIndex: ...
+def _linux_helper_load_ctf(prog: Program, filename: str) -> None:
+    """Try to load a CTF file and use it for type information."""
+    ...
