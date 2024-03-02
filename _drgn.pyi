@@ -2851,3 +2851,7 @@ def _linux_helper_load_ctf(prog: Program, filename: str) -> None:
 def _linux_helper_load_module_ctf(prog: Program, module: str, filename: str) -> None:
     """Load CTF from an external kernel module and add it to existing CTF"""
     ...
+
+def _linux_helper_load_orc(prog: Program) -> None:
+    """Try to find built-in ORC information and use it for stack unwinding."""
+    ...

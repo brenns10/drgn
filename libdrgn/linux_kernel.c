@@ -1768,3 +1768,82 @@ out:
 	free(kmods);
 	return err;
 }
+
+struct drgn_error *linux_kernel_load_builtin_orc(struct drgn_program *prog)
+{
+	struct drgn_error *err;
+	struct kernel_module_iterator kmod_it;
+
+	if (prog->platform.arch->arch != DRGN_ARCH_X86_64)
+		return NULL;
+
+	/* Don't repeat calls */
+	if (prog->dbinfo.orc.version != 0)
+		return NULL;
+
+	/* This could fail with a lookup error in very common cases: the caller
+	 * should be prepared to handle it. */
+	err = linux_kernel_load_vmlinux_orc(prog);
+	if (err)
+		return err;
+
+	/* We cannot use /sys/modules, because we must fetch info out of the
+	 * kernel structure which is not present in /sys/modules */
+	err = kernel_module_iterator_init(&kmod_it, prog, false);
+	if (err)
+		return err;
+
+	for (;;) {
+		uint64_t num_entries;
+		uint64_t unwind_ip_ptr;
+		uint64_t unwind_entries_ptr;
+
+		err = kernel_module_iterator_next(&kmod_it);
+		if (err == &drgn_stop) {
+			err = NULL;
+			break;
+		} else if (err) {
+			kernel_module_iterator_deinit(&kmod_it);
+			break;
+		}
+
+		err = drgn_object_member(&kmod_it.tmp1, &kmod_it.mod, "arch");
+		if (err)
+			break;
+
+		err = drgn_object_member(&kmod_it.tmp2, &kmod_it.tmp1, "num_orcs");
+		if (err)
+			break;
+
+		err = drgn_object_read_unsigned(&kmod_it.tmp2, &num_entries);
+		if (err)
+			break;
+
+		err = drgn_object_member(&kmod_it.tmp2, &kmod_it.tmp1, "orc_unwind_ip");
+		if (err)
+			break;
+
+		err = drgn_object_read_unsigned(&kmod_it.tmp2, &unwind_ip_ptr);
+		if (err)
+			break;
+
+		err = drgn_object_member(&kmod_it.tmp2, &kmod_it.tmp1, "orc_unwind");
+		if (err)
+			break;
+
+		err = drgn_object_read_unsigned(&kmod_it.tmp2, &unwind_entries_ptr);
+		if (err)
+			break;
+
+		if (!num_entries || !unwind_ip_ptr || !unwind_entries_ptr)
+			continue;
+
+		err = drgn_orc_info_insert(prog, kmod_it.start, kmod_it.end, num_entries,
+					   unwind_ip_ptr, unwind_entries_ptr);
+		if (err)
+			break;
+	}
+
+	kernel_module_iterator_deinit(&kmod_it);
+	return err;
+}

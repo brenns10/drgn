@@ -1024,6 +1024,9 @@ drgn_unwind_one_register(struct drgn_program *prog, struct drgn_elf_file *file,
 	}
 	case DRGN_CFI_RULE_AT_DWARF_EXPRESSION:
 	case DRGN_CFI_RULE_DWARF_EXPRESSION:
+		/* It should be impossible for ORC to generate a DWARF
+		 * expression rule: in that case, file is NULL. */
+		assert(file != NULL);
 		err = drgn_eval_cfi_dwarf_expression(prog, file, rule, regs,
 						     buf, size);
 		break;
@@ -1075,10 +1078,6 @@ drgn_unwind_with_cfi(struct drgn_program *prog, struct drgn_cfi_row **row,
 		     struct drgn_register_state **ret)
 {
 	struct drgn_error *err;
-
-	if (!regs->module)
-		return &drgn_not_found;
-
 	struct drgn_elf_file *file;
 	bool interrupted;
 	drgn_register_number ret_addr_regno;

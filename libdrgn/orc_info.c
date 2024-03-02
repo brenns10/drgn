@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include "binary_search.h"
+#include "binary_search_tree.h"
 #include "cleanup.h"
 #include "debug_info.h" // IWYU pragma: associated
 #include "elf_file.h"
@@ -374,11 +375,13 @@ struct drgn_error *drgn_module_parse_orc(struct drgn_module *module,
 	// clear them if anything goes wrong.
 	_cleanup_(drgn_module_clear_orc) struct drgn_module *clear = module;
 
-	err = drgn_read_orc_sections(module);
-	if (err || !module->orc.num_entries)
-		return err;
+	if (module) {
+		err = drgn_read_orc_sections(module);
+		if (err || !module->orc.num_entries)
+			return err;
+	}
 
-	unsigned int num_entries = module->orc.num_entries;
+	unsigned int num_entries = orc->num_entries;
 	_cleanup_free_ unsigned int *indices =
 		malloc_array(num_entries, sizeof(indices[0]));
 	if (!indices)
@@ -470,8 +473,8 @@ struct drgn_error *drgn_module_parse_orc(struct drgn_module *module,
 	}
 
 	uint64_range_vector_shrink_to_fit(&preferred);
-	uint64_range_vector_steal(&preferred, &module->orc.preferred,
-				  &module->orc.num_preferred);
+	uint64_range_vector_steal(&preferred, &orc->preferred,
+				  &orc->num_preferred);
 	orc->pc_offsets = no_cleanup_ptr(pc_offsets);
 	orc->entries = no_cleanup_ptr(entries);
 	orc->num_entries = num_entries;
@@ -525,4 +528,194 @@ drgn_module_find_orc_cfi(struct drgn_module *module, uint64_t pc,
 	uint64_t unbiased_pc = pc - module->debug_file_bias;
 	return drgn_find_orc_cfi(&module->orc, unbiased_pc, row_ret,
 				 interrupted_ret, ret_addr_regno_ret);
+}
+
+struct drgn_orc_map {
+	struct binary_tree_node node;
+	uint64_t min_address, max_address;
+	struct drgn_module_orc_info orc;
+	struct drgn_program *prog;
+};
+
+static inline uint64_t
+drgn_orc_map_to_key(const struct drgn_orc_map *map)
+{
+	return map->min_address;
+}
+
+DEFINE_BINARY_SEARCH_TREE_FUNCTIONS(drgn_orc_map_tree, node,
+				    drgn_orc_map_to_key,
+				    binary_search_tree_scalar_cmp, splay);
+
+void drgn_orc_info_init(struct drgn_orc_info *orc)
+{
+	drgn_orc_map_tree_init(&orc->tree);
+	orc->version = 0;
+}
+
+void drgn_orc_info_destroy(struct drgn_orc_info *orc)
+{
+	struct drgn_orc_map_tree_iterator it =
+		drgn_orc_map_tree_first_post_order(&orc->tree);
+	while (it.entry) {
+		struct drgn_orc_map *map = it.entry;
+		it = drgn_orc_map_tree_next_post_order(it);
+		drgn_module_orc_info_deinit(&map->orc);
+		free(map);
+	}
+	orc->version = 0;
+}
+
+struct drgn_error *
+drgn_orc_info_insert(struct drgn_program *prog, uint64_t pc_start, uint64_t pc_end,
+		     uint64_t num_entries, uint64_t unwind_ip_ptr,
+		     uint64_t unwind_entries_ptr)
+{
+	struct drgn_error *err;
+
+	/* Check whether we overlap with any range. */
+	struct drgn_orc_map_tree_iterator it =
+		drgn_orc_map_tree_search_le(&prog->dbinfo.orc.tree, &pc_end);
+	if (it.entry && (pc_start <= it.entry->max_address)) {
+		return drgn_error_create(DRGN_ERROR_OTHER,
+					 "Overlapping ORC ranges");
+	}
+
+	_cleanup_free_ struct drgn_orc_map *map = malloc(sizeof(*map));
+	if (!map)
+		return &drgn_enomem;
+
+	if (num_entries > UINT_MAX) {
+		return drgn_error_create(DRGN_ERROR_OTHER,
+					 ".orc_unwind_ip is too large");
+	}
+
+	map->min_address = pc_start;
+	map->max_address = pc_end;
+	map->prog = prog;
+	map->orc.num_entries = (unsigned int) num_entries;
+	map->orc.pc_base = unwind_ip_ptr;
+	map->orc.version = prog->dbinfo.orc.version;
+	err = drgn_program_bswap(prog, &map->orc.bswap);
+	if (err)
+		return err;
+
+	_cleanup_free_ int32_t *pc_offsets = malloc_array(
+		num_entries, sizeof(map->orc.pc_offsets[0]));
+	if (!pc_offsets)
+		return &drgn_enomem;
+	err = drgn_program_read_memory(prog, pc_offsets, unwind_ip_ptr,
+				       num_entries * sizeof(*pc_offsets), false);
+	if (err)
+		return err;
+
+	_cleanup_free_ struct drgn_orc_entry *entries = malloc_array(
+		num_entries, sizeof(map->orc.entries[0]));
+	if (!entries)
+		return &drgn_enomem;
+	err = drgn_program_read_memory(prog, entries, unwind_entries_ptr,
+				       num_entries * sizeof(*entries), false);
+	if (err)
+		return err;
+
+	/* We don't use the no_cleanup_ptr macros here, because
+	 * drgn_module_parse_orc() will end up allocating new buffers and
+	 * copying the sorted data in, overwriting the existing pointers without
+	 * freeing them. So we really do want to free these at the end of this
+	 * function, in all cases.
+	 */
+	map->orc.pc_offsets = pc_offsets;
+	map->orc.entries = entries;
+
+	err = drgn_module_parse_orc(NULL, &map->orc);
+	if (err)
+		return err;
+
+	/* Ignoring the return value here because we've already checked for
+	 * overlapping ranges, which would include a duplicate key. */
+	drgn_orc_map_tree_insert(&prog->dbinfo.orc.tree, no_cleanup_ptr(map), NULL);
+	return NULL;
+}
+
+struct drgn_error *linux_kernel_load_vmlinux_orc(struct drgn_program *prog)
+{
+	struct drgn_error *err;
+	struct drgn_symbol *sym;
+	uint8_t header[20];
+
+	uint64_t unwind_ip_start, unwind_ip_end;
+	uint64_t unwind_start, unwind_end;
+	uint64_t header_start = 0, header_end = 0;
+	uint64_t stext, etext;
+
+#define get_symbol(name, var, optional) \
+	err = drgn_program_find_symbol_by_name(prog, name, &sym); \
+	if (!err) { \
+		var = sym->address; \
+		drgn_symbol_destroy(sym); \
+		sym = NULL; \
+	} else if (optional && err->code == DRGN_ERROR_LOOKUP) { \
+		drgn_error_destroy(err); \
+		sym = NULL; \
+		err = NULL; \
+	} else { \
+		return err; \
+	}
+
+	get_symbol("__start_orc_unwind_ip", unwind_ip_start, false);
+	get_symbol("__stop_orc_unwind_ip", unwind_ip_end, false);
+	get_symbol("__start_orc_unwind", unwind_start, false);
+	get_symbol("__stop_orc_unwind", unwind_end, false);
+	get_symbol("_stext", stext, false);
+	get_symbol("_etext", etext, false);
+
+	get_symbol("__start_orc_header", header_start, true);
+	get_symbol("__stop_orc_header", header_end, true);
+#undef get_symbol
+
+	if ((unwind_ip_end - unwind_ip_start) % sizeof(int32_t))
+		return drgn_error_create(DRGN_ERROR_OTHER, "invalid built-in orc_unwind_ip range");
+	uint64_t num_entries = (unwind_ip_end - unwind_ip_start) / sizeof(int32_t);
+	if (num_entries > UINT_MAX)
+		return drgn_error_create(DRGN_ERROR_OTHER,
+					 "built-in orc_unwind_ip range is too large");
+
+	if ((unwind_end - unwind_start) % sizeof(struct drgn_orc_entry)\
+	    || (unwind_end - unwind_start) / sizeof(struct drgn_orc_entry) != num_entries)
+		return drgn_error_create(DRGN_ERROR_OTHER, "invalid built-in orc_unwind range");
+
+	prog->dbinfo.orc.version = -1;
+	if (header_start && header_end) {
+		if (header_end - header_start != sizeof(header))
+			return drgn_error_create(DRGN_ERROR_OTHER, "invalid built-in orc_header size");
+
+		err = drgn_program_read_memory(prog, header, header_start, sizeof(header), false);
+		if (err)
+			return err;
+
+		prog->dbinfo.orc.version = orc_version_from_header(header);
+		if (prog->dbinfo.orc.version < 0)
+			return drgn_error_create(DRGN_ERROR_OTHER,
+						 "unrecognized .orc_header");
+	}
+	if (prog->dbinfo.orc.version < 0)
+		prog->dbinfo.orc.version = orc_version_from_osrelease(prog);
+
+	return drgn_orc_info_insert(prog, stext, etext, num_entries,
+				    unwind_ip_start, unwind_start);
+}
+
+struct drgn_error *
+drgn_find_builtin_orc_cfi(struct drgn_program *prog, uint64_t pc,
+			  struct drgn_cfi_row **row_ret, bool *interrupted_ret,
+			  drgn_register_number *ret_addr_regno_ret)
+{
+	struct drgn_orc_map_tree_iterator it =
+		drgn_orc_map_tree_search_le(&prog->dbinfo.orc.tree, &pc);
+
+	if (!it.entry || pc > it.entry->max_address)
+		return &drgn_not_found;
+
+	return drgn_find_orc_cfi(&it.entry->orc, pc, row_ret, interrupted_ret,
+				 ret_addr_regno_ret);
 }

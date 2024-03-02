@@ -24,6 +24,7 @@
 #include "error.h"
 #include "linux_kernel.h"
 #include "openmp.h"
+#include "orc_info.h"
 #include "platform.h"
 #include "program.h"
 #include "util.h"
@@ -2152,6 +2153,7 @@ void drgn_debug_info_init(struct drgn_debug_info *dbinfo,
 	drgn_module_table_init(&dbinfo->modules);
 	c_string_set_init(&dbinfo->module_names);
 	drgn_dwarf_info_init(dbinfo);
+	drgn_orc_info_init(&dbinfo->orc);
 }
 
 void drgn_debug_info_deinit(struct drgn_debug_info *dbinfo)
@@ -2162,6 +2164,7 @@ void drgn_debug_info_deinit(struct drgn_debug_info *dbinfo)
 	assert(drgn_module_table_empty(&dbinfo->modules));
 	drgn_module_table_deinit(&dbinfo->modules);
 	dwfl_end(dbinfo->dwfl);
+	drgn_orc_info_destroy(&dbinfo->orc);
 }
 
 struct drgn_elf_file *drgn_module_find_dwarf_file(struct drgn_module *module,
@@ -2213,13 +2216,14 @@ drgn_module_find_cfi(struct drgn_program *prog, struct drgn_module *module,
 	// If the file's platform doesn't match the program's, we can't use its
 	// CFI.
 	const bool can_use_loaded_file =
-		(module->loaded_file &&
+		(module && module->loaded_file &&
 		 drgn_platforms_equal(&module->loaded_file->platform,
 				      &prog->platform));
 	const bool can_use_debug_file =
-		(module->debug_file &&
+		(module && module->debug_file &&
 		 drgn_platforms_equal(&module->debug_file->platform,
 				      &prog->platform));
+	const bool can_use_builtin_orc = prog->dbinfo.orc.version > 0;
 
 	bool prefer_orc = false;
 	if (can_use_debug_file) {
@@ -2274,6 +2278,16 @@ drgn_module_find_cfi(struct drgn_program *prog, struct drgn_module *module,
 					       ret_addr_regno_ret);
 		if (err != &drgn_not_found)
 			return err;
+	}
+
+	if (can_use_builtin_orc) {
+		err = drgn_find_builtin_orc_cfi(prog, pc, row_ret,
+						interrupted_ret,
+						ret_addr_regno_ret);
+		if (err != &drgn_not_found) {
+			*file_ret = NULL;
+			return err;
+		}
 	}
 	return &drgn_not_found;
 }

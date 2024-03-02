@@ -10,7 +10,7 @@ associated kallsyms symbol info.
 import os
 from typing import Optional
 
-from _drgn import _linux_helper_load_ctf
+from _drgn import _linux_helper_load_ctf, _linux_helper_load_orc
 from drgn import Program
 from drgn.helpers.linux.kallsyms import load_module_kallsyms, load_vmlinux_kallsyms
 
@@ -24,7 +24,10 @@ _CTF_PATHS = [
 
 
 def load_ctf(
-    prog: Program, path: Optional[str] = None, use_kallsyms: bool = True
+    prog: Program,
+    path: Optional[str] = None,
+    use_kallsyms: bool = True,
+    use_orc: bool = True,
 ) -> None:
     """
     Use Compact Type Format data for debugging.
@@ -37,6 +40,8 @@ def load_ctf(
     :param prog: Program for debugging
     :param path: specify an alternative path to ``vmlinux.ctfa``
     :param use_kallsyms: whether we should try to load kallsyms too
+    :param use_orc: whether we should try to load ORC too
+       (note: requires use_kallsyms)
     """
     uname = prog["UTS_RELEASE"].string_().decode()
     if path and not os.path.isfile(path):
@@ -57,3 +62,11 @@ def load_ctf(
 
         module_finder = load_module_kallsyms(prog)
         prog.register_symbol_finder("module_kallsyms", module_finder, enable_index=1)
+
+        if use_orc:
+            try:
+                _linux_helper_load_orc(prog)
+            except LookupError:
+                # It's common for ORC to not be built on older kernels,
+                # don't raise an error for this case.
+                pass
