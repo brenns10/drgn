@@ -53,6 +53,7 @@ libdrgnimpl_la_SOURCES = $(ARCH_DEFS_PYS:_defs.py=.c) \
 			 debug_info.c \
 			 debug_info.h \
 			 drgn_section_name_to_index.inc \
+			 drgn_ctf.h \
 			 dwarf_constants.c \
 			 dwarf_constants.h \
 			 dwarf_info.c \
@@ -127,6 +128,11 @@ if WITH_LIBKDUMPFILE
 libdrgnimpl_la_SOURCES += kdump.c
 libdrgnimpl_la_CFLAGS += $(libkdumpfile_CFLAGS)
 libdrgnimpl_la_LIBADD += $(libkdumpfile_LIBS)
+endif
+
+if WITH_LIBCTF
+libdrgnimpl_la_SOURCES += ctf.c
+libdrgnimpl_la_LIBADD += $(CTF_LIBS)
 endif
 
 %: %.strswitch build-aux/gen_strswitch.py build-aux/codegen_utils.py
