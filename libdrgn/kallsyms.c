@@ -864,7 +864,9 @@ struct drgn_error *drgn_kallsyms_init(struct kallsyms_finder *kr,
 	 *
 	 * Reading /proc/kallsyms is more straightforward, performant, and it
 	 * has broader kernel version support: it should be preferred for live
-	 * systems.
+	 * systems. However, when running as non-root, /proc/kallsyms reports
+	 * 0 for all addresses, rather than returning EPERM. So we can only use
+	 * it when we are running with root privileges.
 	 *
 	 * Parsing kallsyms from a core dump is more involved, and it requires
 	 * that the kernel publish some symbol addresses in the VMCOREINFO note.
@@ -874,7 +876,7 @@ struct drgn_error *drgn_kallsyms_init(struct kallsyms_finder *kr,
 	 * - 5fd8fea935a10 ("vmcoreinfo: include kallsyms symbols")
 	 * - f09bddbd86619 ("vmcoreinfo: add kallsyms_num_syms symbol")
 	 */
-	if (prog->flags & DRGN_PROGRAM_IS_LIVE)
+	if (prog->flags & DRGN_PROGRAM_IS_LIVE && geteuid() == 0)
 		return drgn_kallsyms_from_proc(kr, prog);
 	else if (loc->kallsyms_names && loc->kallsyms_token_table
 		 && loc->kallsyms_token_index && loc->kallsyms_num_syms)
