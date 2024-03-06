@@ -867,9 +867,11 @@ drgn_ctf_find_var_all_dicts(struct drgn_ctf_info *info, const char *name, uint64
 	 * which module an address is from. If we do that, we can skip directly
 	 * to searching the relevant dict.
 	 */
-	err = drgn_ctf_find_var(info, name, info->vmlinux, addr, ret);
-	if (!err || err != &drgn_not_found)
-		return err;
+	if (info->vmlinux) {
+		err = drgn_ctf_find_var(info, name, info->vmlinux, addr, ret);
+		if (!err || err != &drgn_not_found)
+			return err;
+	}
 
 	for (it = drgn_ctf_dicts_first(&info->dicts); it.entry; it = drgn_ctf_dicts_next(it)) {
 		if (it.entry->value == info->vmlinux || it.entry->value == info->root)
@@ -1140,6 +1142,7 @@ static int process_dict(ctf_dict_t *unused, const char *name, void *void_arg)
 	return ret;
 }
 
+#ifndef WITH_LIBBFD
 /*
  * libctf contains an awfully convenient "ctf_open" which seems to "do what you
  * mean". Unfortunately, it is not present when you compile with -lctf-nobfd.
@@ -1177,6 +1180,7 @@ static struct drgn_error *read_ctf_buf(const char *file, char **buf_ret, size_t 
 	*size_ret = size;
 	return NULL;
 }
+#endif
 
 static void
 drgn_ctf_enums_free_all(struct drgn_ctf_enums *enums)
@@ -1214,6 +1218,18 @@ drgn_program_load_ctf(struct drgn_program *prog, const char *file, struct drgn_c
 	struct drgn_error *err;
 	int errnum = 0;
 	struct drgn_ctf_info *info = calloc(1, sizeof(*info));
+
+	if (!info)
+		return &drgn_enomem;
+
+#ifdef WITH_LIBBFD
+	info->archive = ctf_open(file, NULL, &errnum);
+	if (!info->archive) {
+		free(info);
+		return drgn_error_format(DRGN_ERROR_OTHER, "ctf_open \"%s\": %s",
+					 file, ctf_errmsg(errnum));
+	}
+#else
 	ctf_sect_t data = {0};
 	char *ctf_contents;
 
@@ -1222,10 +1238,6 @@ drgn_program_load_ctf(struct drgn_program *prog, const char *file, struct drgn_c
 		return err;
 	data.cts_data = ctf_contents;
 
-	if (!info)
-		return &drgn_enomem;
-
-	info->prog = prog;
 	info->ctf_data = ctf_contents;
 	info->ctf_size = data.cts_size;
 	info->archive = ctf_arc_bufopen(&data, NULL, NULL, &errnum);
@@ -1234,6 +1246,8 @@ drgn_program_load_ctf(struct drgn_program *prog, const char *file, struct drgn_c
 		return drgn_error_format(DRGN_ERROR_OTHER, "ctf_arc_bufopen \"%s\": %s",
 					 file, ctf_errmsg(errnum));
 	}
+#endif
+	info->prog = prog;
 	drgn_ctf_dicts_init(&info->dicts);
 	drgn_ctf_enums_init(&info->enums);
 	drgn_ctf_names_init(&info->names);
@@ -1269,20 +1283,18 @@ drgn_program_load_ctf(struct drgn_program *prog, const char *file, struct drgn_c
 	struct drgn_ctf_arg arg = {0};
 	arg.info = info;
 
-	/* Process vmlinux first so it's at the beginning of the hash lists */
+	/* Try to process vmlinux first so it's at the beginning of the hash
+	 * lists */
 	ctf_dict_t *d = ctf_dict_open(info->archive, "vmlinux", &errnum);
-	if (!d) {
-		err = drgn_error_format(DRGN_ERROR_OTHER, "ctf_dict_open vmlinux: %s",
-					ctf_errmsg(errnum));
-		goto error;
+	if (d) {
+		errnum = process_dict(d, "vmlinux", &arg);
+		ctf_dict_close(d);
+		if (errnum != 0) {
+			err = arg.err;
+			goto error;
+		}
 	}
-	errnum = process_dict(d, "vmlinux", &arg);
 
-	ctf_dict_close(d);
-	if (errnum != 0) {
-		err = arg.err;
-		goto error;
-	}
 
 	/* Now process the remaining dictionaries */
 	errnum = ctf_archive_iter(info->archive, process_dict, &arg);
@@ -1293,7 +1305,6 @@ drgn_program_load_ctf(struct drgn_program *prog, const char *file, struct drgn_c
 		goto error;
 	}
 
-	*ret = info;
 	err = drgn_program_add_type_finder(prog, drgn_type_from_ctf, info);
 	if (err)
 		goto error;
@@ -1301,6 +1312,8 @@ drgn_program_load_ctf(struct drgn_program *prog, const char *file, struct drgn_c
 	err = drgn_program_add_object_finder(prog, drgn_ctf_find_object, info);
 	if (err)
 		goto error; /* TODO: cleanup type finder? */
+
+	*ret = info;
 
 	return NULL;
 error:

@@ -102,12 +102,13 @@ AS_CASE(["x$with_libctf"],
         [xnobfd], [CTF_LIBS=-lctf-nobfd],
         [xyes], [CTF_LIBS=-lctf],
         [xno], [],
-        [xauto], [AC_SEARCH_LIBS(ctf_lookup_by_name, [ctf-nobfd ctf],
+        [xauto], [AC_SEARCH_LIBS(ctf_lookup_by_name, [ctf ctf-nobfd],
                                  [with_libctf=yes, CTF_LIBS=$ac_cv_search_ctf_lookup_by_name],
-                                 [with_libctf=no])],
-        [CTF_LIBS="$with_libctf"])
+                                 [with_libctf=no])])
 AM_CONDITIONAL([WITH_LIBCTF], [test ! "x$with_libctf" = xno])
+AM_CONDITIONAL([WITH_LIBBFD], [test "x$CTF_LIBS" = x-lctf])
 AM_COND_IF([WITH_LIBCTF], [AC_DEFINE(WITH_LIBCTF)])
+AM_COND_IF([WITH_LIBBFD], [AC_DEFINE(WITH_LIBBFD)])
 AC_SUBST(CTF_LIBS)
 
 AC_ARG_ENABLE([compiler-warnings],
