@@ -390,22 +390,54 @@ struct compound_member_visit_arg {
 	struct drgn_error *err;
 };
 
+static struct drgn_error *
+check_is_bitfield(struct drgn_ctf_info *info, ctf_dict_t *dict, ctf_id_t id,
+		  ctf_encoding_t enc, bool *ret)
+{
+
+	ctf_dict_t *canonical_dict;
+	ctf_id_t canonical_id;
+	ssize_t byte_size = ctf_type_size(dict, id);
+
+	// When an offset is present, or when the bit count is not exactly the
+	// same as the bytes, we can short-circuit: we know this must be a bit
+	// field.
+	if (enc.cte_offset > 0 || enc.cte_bits != byte_size * 8) {
+		*ret = true;
+		return NULL;
+	}
+
+	// No offset and the bit size matches byte size. Unfortunately,
+	// dwarf2ctf encodes bit field integers using the smallest byte size
+	// which would accommodate the bit field: not the canonical type size.
+	// So, we'll need to look up the integer/float type by name and find out
+	// if the bitfield size matches the real canonical type size. This will
+	// let us know whether it is a bit field.
+	const char *type_name = ctf_type_name_raw(dict, id);
+	int kind = ctf_type_kind(dict, id);
+	struct drgn_error *err = drgn_ctf_lookup_by_name(info, dict, type_name,
+							 1UL << kind, &canonical_id,
+							 &canonical_dict);
+	if (err)
+		return err;
+	ssize_t canonical_size = ctf_type_size(canonical_dict, canonical_id);
+	*ret = (enc.cte_bits != canonical_size * 8);
+	return NULL;
+}
+
 static int compound_member_visit(const char *name, ctf_id_t membtype, unsigned long offset,
                                  void *void_arg)
 {
 	union drgn_lazy_object obj;
 	struct compound_member_visit_arg *arg = void_arg;
-	struct drgn_ctf_thunk_arg *thunk_arg = calloc(1, sizeof(*thunk_arg));
-	ctf_id_t resolved;
-	ctf_encoding_t enc;
-	bool has_encoding = false;
+	_cleanup_free_ struct drgn_ctf_thunk_arg *thunk_arg =
+		calloc(1, sizeof(*thunk_arg));
 
 	//printf("Compound member %s id %lu\n", name, membtype);
 	thunk_arg->dict = arg->dict;
 	thunk_arg->info = arg->info;
 	thunk_arg->id = membtype;
 	thunk_arg->bit_field_size = 0;
-	drgn_lazy_object_init_thunk(&obj, arg->info->prog, drgn_ctf_thunk, thunk_arg);
 
 	/* libctf gives us 0-length name for anonymous members, but drgn prefers
 	 * NULL. 0-length name seems to be legal, but inaccessible for the API. */
@@ -413,97 +445,68 @@ static int compound_member_visit(const char *name, ctf_id_t membtype, unsigned l
 		name = NULL;
 
 	/*
-	 * CTF has some really frustrating semantics regarding compound members
-	 * and bit fields. Hopefully this explains what this code is doing.
+	 * Integers and floats may be bit fields. In order to properly represent
+	 * them, we need to know three things:
 	 *
-	 * (1) Bit field offset can be specified as part of the compound member
-	 * (see the signature of this function). However, for some reason, the
-	 * bit field size is not represented this way.
+	 * 1. Is the member a bit field?
+	 * 2. What is the bit field offset?
+	 * 3. What is the bit field size?
 	 *
-	 * (2) Bit field offset, along with bit field size, can be specified as
-	 * part of integer/float "encoding" field. This has a key disadvantage:
-	 * the underlying integer type (e.g. unsigned int) and any typedefs +
-	 * qualifiers, needs to be duplicated for each unique encoding seen in a
-	 * bit field. This not only wastes space, but also creates quite
-	 * confusing CTF data (multiple ints, floats, typedefs with the same
-	 * name).
+	 * CTF readily gives #2 and #3, but it doesn't give an easy indication
+	 * that a member actually is a bit field. This means we need to know the
+	 * canonical bit size the underlying integer type: if the member has no
+	 * bitfield offset and the same bit size as the canonical size, we can
+	 * conclude the member is not a bitfield.
 	 *
-	 * (3) Since the solution in #2 is pretty sub-optimal, there is a CTF
-	 * type kind, CTF_K_SLICE. This is essentially a type which references
-	 * another type, and modifies its encoding. This means that you could
-	 * have something like this:
-	 *    STRUCT
-	 *      member "foo" offset 0 bits
-	 *        SLICE (encoding: offset 4 bits, size 1 bit)
-	 *          TYPEDEF "u64" -> TYPEDEF "__u64"
-	 *            INTEGER "unsigned long long int" (offset 0, size 64 bits)
+	 * Unfortunately, knowing the canonical type size is not always easy.
+	 * CTF represents bitfields in two different ways:
 	 *
-	 * Comapred to (2), there is a new type ID for the SLICE type, but the
-	 * TYPEDEF and INTEGER types there are unmodified - they are the base
-	 * type IDs, with no duplication. This seems great, right?
-	 *
-	 * Unfortunately, libctf's API denies the existence of a SLICE type.
-	 * When you look up the type kind for a SLICE, it simply looks at the
-	 * referenced type and returns that type's kind. This is frustrating,
-	 * because it means that secretly, any type could be a slice modifying
-	 * the encoding of a target type -- and you have no way to detect it,
-	 * because libctf refuses to admit that the type is indeed a SLICE.
-	 *
-	 * To add to all of this, we are actually forced to deal with CTF data
-	 * that is generated using approach (2) -- generated by a program called
-	 * dwarf2ctf, and approach (3) -- generated by GCC. So our solution
-	 * needs to handle both cases gracefully.
-	 *
-	 * The approach is as follows: try to get the integer encoding from the
-	 * member type ID, regardless of whether it looks like an integer. This
-	 * handles the possibility that we're looking at a slice. Failing that,
-	 * try to resolve to the type ID, and if it's an integer or float, then
-	 * grab the encoding from that. Finally, regardless of whether the
-	 * encoding information came from a slice or the target, we use the
-	 * offset and bit size. We still need to detect whether the type **IS**
-	 * a bitfield, which we do by checking whether the bit size == 8 * byte
-	 * size. If so, we set the bit_field_size parameter to inform drgn's
-	 * type system.
+	 * (a) dwarf2ctf: by creating a specialized type ID of CTF_K_INTEGER
+	 *     with encoding specifying the bit field size and offset. The
+	 *     ctf_type_size() reported for this type is the smallest size which
+	 *     would fit the bitfield: not the size of the canonical integer
+	 *     type.
+	 * (b) gcc: by creating a type ID of CTF_K_SLICE (which is not visible
+	 *     via the CTF API). The slice has an encoding which contains the
+	 *     bitfield information, but it references the underlying canonical
+	 *     type. This means we can simply compare the bit size against the
+	 *     canonical size of the underlying type.
 	 */
-	resolved = ctf_type_resolve(arg->dict, membtype);
-	if (ctf_type_encoding(arg->dict, membtype, &enc) == 0) {
-		/*
-		 * We're either looking at a SLICE type, or we're looking at a
-		 * raw base INTEGER with no intermediate qualifiers or typedefs.
-		 * Either way, use the encoding.
-		 */
-		has_encoding = true;
 
-		/*
-		 * This must have been a base INTEGER or FLOAT, since resolving
-		 * failed. Set resolved to the original type ID so we can use it
-		 * to detect the byte size below.
-		 */
-		if (resolved == CTF_ERR)
-			resolved = membtype;
-	} else if (resolved != CTF_ERR) {
-		/*
-		 * Check for the base type being INTEGER / FLOAT and if so, use
-		 * the encoding. This would be the old-fashioned approach (2).
-		 */
-		int kind = ctf_type_kind(arg->dict, resolved);
-		if ((kind == CTF_K_INTEGER || kind == CTF_K_FLOAT)
-		    && ctf_type_encoding(arg->dict, resolved, &enc) == 0)
-			has_encoding = true;
+	// Resolved type ID: traverses through all qualifiers/typedefs, but not
+	// slices
+	ctf_id_t resolved = ctf_type_resolve(arg->dict, membtype);
+	// Reference type ID: traverses through one step of references, but DOES
+	// traverse slices
+	ctf_id_t reference = ctf_type_reference(arg->dict, resolved);
+
+	ctf_encoding_t enc;
+	bool has_encoding = ctf_type_encoding(arg->dict, resolved, &enc) == 0;
+	bool is_bit_field = false;
+	if (has_encoding && reference != CTF_ERR) {
+		// A slice! It has an encoding, but still references another
+		// type. The underlying type will have the canonical size.
+		ssize_t canonical_size = ctf_type_size(arg->dict, reference);
+		is_bit_field = enc.cte_bits != 8 * canonical_size;
+		// We should skip over the slice since we have the info we need
+		// from it.
+		thunk_arg->id = reference;
+	} else if (has_encoding) {
+		// Not a slice! It has an encoding, but the byte size may
+		// not match the canonical size of the type.
+		arg->err = check_is_bitfield(arg->info, arg->dict, resolved,
+					     enc, &is_bit_field);
+		if (arg->err)
+			return -1;
 	}
 
-	if (has_encoding) {
-		/*
-		 * The encoded offset augments the offset we already have. The
-		 * encoded bit field size may need to be used, if it conflicts
-		 * with the byte size of the type.
-		 */
-		size_t bytes = ctf_type_size(arg->dict, resolved);
-		if (enc.cte_bits != bytes * 8)
-			thunk_arg->bit_field_size = enc.cte_bits;
+	if (is_bit_field) {
+		thunk_arg->bit_field_size = enc.cte_bits;
 		offset += enc.cte_offset;
 	}
 
+	drgn_lazy_object_init_thunk(&obj, arg->info->prog, drgn_ctf_thunk,
+				    no_cleanup_ptr(thunk_arg));
 	arg->err = drgn_compound_type_builder_add_member(arg->builder, &obj, name, offset);
 	if (arg->err) {
 		drgn_lazy_object_deinit(&obj); /* frees thunk_arg */
