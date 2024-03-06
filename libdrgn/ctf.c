@@ -715,7 +715,13 @@ drgn_ctf_get_dict(struct drgn_ctf_info *info, const char *name, ctf_dict_t **ret
 		return &drgn_enomem;
 
 	ctf_dict_t *dict = ctf_dict_open(info->archive, name, &errnum);
-	if (!dict) {
+	if (!dict && errnum == ECTF_ARNNAME) {
+		// The common case for failure is that the dictionary name did
+		// not exist, this only occurs when a dict name is passed in via
+		// "drgn.type()" second argument. Return a lookup error.
+		err = &drgn_not_found;
+		goto out;
+	} else if (!dict) {
 		err = drgn_error_format(DRGN_ERROR_OTHER, "ctf_dict_open: \"%s\": %s",
 					name, ctf_errmsg(errnum));
 		goto out;
@@ -744,7 +750,10 @@ drgn_ctf_lookup_by_name(struct drgn_ctf_info *info, ctf_dict_t *dict, const char
 
 	struct drgn_ctf_names_node *node;
 	for (node = &it.entry->value; node; node = node->next) {
-		if (dict && dict != node->dict)
+		/* When dict is provided, restrict our search to that dict, but
+		 * we need to allow types from the parent dictionary too. */
+		if (dict && ctf_type_ischild(node->dict, node->id)
+		    && dict != node->dict)
 			continue;
 		int kind = ctf_type_kind(node->dict, node->id);
 		if (!(want_kinds & (1ULL << kind)))
@@ -757,12 +766,18 @@ drgn_ctf_lookup_by_name(struct drgn_ctf_info *info, ctf_dict_t *dict, const char
 	return &drgn_not_found;
 }
 
+static bool looks_like_filename(const char *filename)
+{
+	/* C filenames should contain '.' or '/' */
+	return strchr(filename, '/') != NULL ||
+		strchr(filename, '.') != NULL;
+}
+
 static struct drgn_error *
 drgn_type_from_ctf(uint64_t kinds, const char *name,
 		   size_t name_len, const char *filename,
 		   void *arg, struct drgn_qualified_type *ret)
 {
-	char *name_copy;
 	ctf_dict_t *dict = NULL;
 	ctf_id_t id;
 	struct drgn_ctf_info *info = arg;
@@ -779,24 +794,29 @@ drgn_type_from_ctf(uint64_t kinds, const char *name,
 		ctf_kinds |= (1 << CTF_K_TYPEDEF);
 
 	/*
-	 * When filename is provided, we can resolve to a CTF dictionary.
-	 * Otherwise, we need to search for it in all dicts.
+	 * Linux kernel CTF archives don't use filenames as dictionary names:
+	 * they are named by kernel module. Userspace CTF, on the other hand,
+	 * does use filenames.
+	 *
+	 * For the kernel, we'd like to allow users to run prog.type("name",
+	 * "module") for CTF in order to restrict lookup to a given module.
+	 * However, for existing code which uses filenames to disambiguate, we
+	 * can't interpret these filenames as modules, since lookup will always
+	 * fail, breaking existing code. So, silently ignore the filename
+	 * parameter when it looks like a filename, and we're debugging the
+	 * kernel.
 	 */
-	if (filename) {
+	if (filename && !((info->prog->flags & DRGN_PROGRAM_IS_LINUX_KERNEL) &&
+			  looks_like_filename(filename))) {
 		err = drgn_ctf_get_dict(info, filename, &dict);
-		if (err) {
-			drgn_error_destroy(err);
-			err = NULL;
-			filename = NULL;
-		}
+		if (err)
+			return err;
 	}
 
-	name_copy = strndup(name, name_len);
+	_cleanup_free_ char *name_copy = strndup(name, name_len);
 
 	err = drgn_ctf_lookup_by_name(info, dict, name_copy, ctf_kinds,
 				      &id, &dict);
-	free(name_copy);
-	name_copy = NULL;
 
 	if (!err)
 		return drgn_type_from_ctf_id(info, dict, id, ret,
@@ -888,36 +908,37 @@ drgn_ctf_find_object(const char *name, size_t name_len,
 	struct drgn_error *err = NULL;
 	struct drgn_ctf_info *info = arg;
 	ctf_dict_t *dict = NULL;
-	char *name_copy;
+	_cleanup_free_ char *name_copy = strndup(name, name_len);
 
 	/*
-	 * When given a filename, interpret it as a kernel module and use it as
-	 * the CTF dictionary name to search. Otherwise, we'll need to search
-	 * all of them.
-	 * TODO: it may be better to have some way to specify a "default" CTF
-	 * dictionary. When filename is not provided, we would search that dict
-	 * first, and failing that, we'd search the others.
-	 * TODO: of course, filename is not the same thing as module. In order
-	 * to not break Drgn code which writes filenames here, we need to ignore
-	 * errors opening non-existent CTF dictionaries and fall back to a
-	 * search of all dicts.
+	 * Linux kernel CTF archives don't use filenames as dictionary names:
+	 * they are named by kernel module. Userspace CTF, on the other hand,
+	 * does use filenames.
+	 *
+	 * For the kernel, we'd like to allow users to run prog.type("name",
+	 * "module") for CTF in order to restrict lookup to a given module.
+	 * However, for existing code which uses filenames to disambiguate, we
+	 * can't interpret these filenames as modules, since lookup will always
+	 * fail, breaking existing code. So, silently ignore the filename
+	 * parameter when it looks like a filename, and we're debugging the
+	 * kernel.
+	 *
+	 * TODO: in the future, filtering symbols by the given kernel module
+	 * name would be helpful too.
 	 */
-	name_copy = strndup(name, name_len);
-	if (filename) {
+	if (filename && !((info->prog->flags & DRGN_PROGRAM_IS_LINUX_KERNEL) &&
+			  looks_like_filename(filename))) {
 		err = drgn_ctf_get_dict(info, filename, &dict);
-		if (err) {
-			drgn_error_destroy(err);
-			err = NULL;
-			filename = NULL;
-		}
+		if (err)
+			return err;
 	}
 
 	if (flags & DRGN_FIND_OBJECT_CONSTANT) {
 		err = drgn_ctf_find_constant(info, name_copy, NULL, ret);
 		if (!err || err != &drgn_not_found)
-			goto out_free;
+			return err;
 	}
-	if (flags & DRGN_FIND_OBJECT_VARIABLE) {
+	if (flags & (DRGN_FIND_OBJECT_VARIABLE | DRGN_FIND_OBJECT_FUNCTION)) {
 		uint64_t addr;
 		struct drgn_symbol *sym = NULL;
 		err = drgn_program_find_symbol_by_name(info->prog, name, &sym);
@@ -928,17 +949,14 @@ drgn_ctf_find_object(const char *name, size_t name_len,
 		if (dict) {
 			err = drgn_ctf_find_var(info, name_copy, dict, addr, ret);
 			if (!err || err != &drgn_not_found)
-				goto out_free;
+				return err;
 		} else {
 			err = drgn_ctf_find_var_all_dicts(info, name_copy, addr, ret);
 			if( !err || err != &drgn_not_found )
-				goto out_free;
+				return err;
 		}
 	}
-	err = &drgn_not_found;
-out_free:
-	free(name_copy);
-	return err;
+	return &drgn_not_found;
 }
 
 struct drgn_ctf_arg {
