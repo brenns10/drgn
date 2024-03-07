@@ -238,13 +238,50 @@ static struct drgn_error *
 drgn_array_from_ctf(struct drgn_ctf_info *info, ctf_dict_t *dict,
                     ctf_id_t id, struct drgn_qualified_type *ret)
 {
-	struct drgn_qualified_type etype;
 	struct drgn_error *err;
-	ctf_arinfo_t arinfo;
+#define MAX_DIMENSIONS 8
+	int dims = 0;
+	ctf_arinfo_t dim_info[MAX_DIMENSIONS];
 
-	ctf_array_info(dict, id, &arinfo);
+	/*
+	 * Handle multi-dimensional arrays properly...
+	 *
+	 * Unfortunately, CTF has several bugs related to multidimensional
+	 * arrays.
+	 *
+	 * dwarf2ctf generated CTF simply does not represent them (it uses the
+	 * last dimension's index and calls it good enough).
+	 *
+	 * GCC generated CTF represents the dimensions' indices in the opposite
+	 * order as would be expected. The "nelems" field for the first
+	 * CTF_K_ARRAY type is in fact the value for the last dimension, and so
+	 * on. This is a _bug_, and future GCC implementations of CTF will fix
+	 * this (they will contain a feature flag for clients detect the issue).
+	 */
+	while (ctf_type_kind(dict, id) == CTF_K_ARRAY) {
+		if (dims >= MAX_DIMENSIONS)
+			return drgn_error_format(
+				DRGN_ERROR_NOT_IMPLEMENTED,
+				"not supported with CTF: arrays with >%d dimensions",
+				MAX_DIMENSIONS
+			);
 
-	err = drgn_type_from_ctf_id(info, dict, arinfo.ctr_contents, &etype, false);
+		ctf_array_info(dict, id, &dim_info[dims]);
+		id = dim_info[dims].ctr_contents;
+		dims++;
+	}
+
+	struct drgn_qualified_type etype = {0}, arrtype = {0};
+	int i = dims - 1;
+	int j;
+	if (info->bug_reversed_array_indices)
+		j = dims - i - 1;
+	else
+		j = i;
+
+	/* First, construct the element type for a non-array type */
+	err = drgn_type_from_ctf_id(info, dict, dim_info[i].ctr_contents,
+				    &etype, false);
 	if (err)
 		return err;
 
@@ -261,18 +298,61 @@ drgn_array_from_ctf(struct drgn_ctf_info *info, ctf_dict_t *dict,
 	 * such as "struct zone_padding". These are not intended to be used as
 	 * VLAs, they are intended to be used for the cache-line padding
 	 * attributes. So the "historical variety" of VLA cannot be detected by
-	 * testing nelems: zero is a valid array length. Use ctr_index here to
-	 * ensure that we define these explicit zero-length arrays as such.
-	 * Otherwise, drgn will complain about an incomplete array type in the
-	 * middle of a struct.
+	 * testing nelems: zero is a valid array length.
+	 *
+	 * Thus, use ctr_index here to ensure that we define these explicit
+	 * zero-length arrays as such.  Otherwise, drgn will complain about an
+	 * incomplete array type in the middle of a struct.
+	 *
+	 * Further, we can only allow incomplete arrays if they are the outer
+	 * dimension of a multi-dimensional array. Other dimensions don't make
+	 * sense.
+	 *
+	 * We use j instead of i here to account for the reversed indexing issue
+	 * described above.
 	 */
-	if (arinfo.ctr_index)
-		return drgn_array_type_create(info->prog, etype, arinfo.ctr_nelems,
-		                              &drgn_language_c, &ret->type);
-	else
-		return drgn_incomplete_array_type_create(info->prog, etype,
-		                                         &drgn_language_c,
-		                                         &ret->type);
+	if (dim_info[j].ctr_index) {
+		err = drgn_array_type_create(info->prog, etype, dim_info[j].ctr_nelems,
+					&drgn_language_c, &arrtype.type);
+	} else {
+		if (i != 0)
+			err = drgn_error_create(DRGN_ERROR_INVALID_ARGUMENT,
+						"error: multidimensional arrays may only be incomplete in the outer dimension");
+		else
+			err = drgn_incomplete_array_type_create(info->prog, etype,
+								&drgn_language_c,
+								&arrtype.type);
+	}
+	if (err)
+		return err;
+
+	for (i = i - 1; i >= 0; i--) {
+		etype = arrtype;
+		arrtype = (struct drgn_qualified_type){0};
+		if (info->bug_reversed_array_indices)
+			j = dims - i - 1;
+		else
+			j = i;
+
+		/* Use j for the ctr_index and ctr_nelems */
+		if (dim_info[j].ctr_index) {
+			err = drgn_array_type_create(info->prog, etype, dim_info[j].ctr_nelems,
+						&drgn_language_c, &arrtype.type);
+		} else {
+			if (i != 0)
+				err = drgn_error_create(DRGN_ERROR_INVALID_ARGUMENT,
+							"error: multidimensional arrays may only be incomplete in the outer dimension");
+			else
+				err = drgn_incomplete_array_type_create(info->prog, etype,
+									&drgn_language_c,
+									&arrtype.type);
+		}
+		if (err)
+			return err;
+	}
+	*ret = arrtype;
+	return err;
+#undef MAX_DIMENSIONS
 }
 
 struct drgn_ctf_thunk_arg {
@@ -1248,6 +1328,10 @@ drgn_program_load_ctf(struct drgn_program *prog, const char *file, struct drgn_c
 	}
 #endif
 	info->prog = prog;
+	/* In the future, we will set this based on a flag provided by libctf.
+	 * It is not currently available, and all known CTF data uses the
+	 * reversed array indices. */
+	info->bug_reversed_array_indices = true;
 	drgn_ctf_dicts_init(&info->dicts);
 	drgn_ctf_enums_init(&info->enums);
 	drgn_ctf_names_init(&info->names);

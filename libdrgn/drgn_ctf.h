@@ -70,6 +70,7 @@ struct drgn_ctf_info {
 	struct drgn_ctf_type_map types;
 	ctf_dict_t *root;
 	ctf_dict_t *vmlinux;
+	bool bug_reversed_array_indices;
 };
 
 struct drgn_error *
