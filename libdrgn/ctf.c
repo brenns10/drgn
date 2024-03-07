@@ -412,6 +412,7 @@ drgn_function_from_ctf(struct drgn_ctf_info *info, ctf_dict_t *dict,
 	//printf("Create function type for id %lu\n", id);
 
 	ctf_func_type_info(dict, id, &funcinfo);
+	variadic = funcinfo.ctc_flags & CTF_FUNC_VARARG;
 	argtypes = calloc(funcinfo.ctc_argc, sizeof(*argtypes));
 	if (!argtypes)
 		return &drgn_enomem;
@@ -426,11 +427,6 @@ drgn_function_from_ctf(struct drgn_ctf_info *info, ctf_dict_t *dict,
 	for (size_t i = 0; i < funcinfo.ctc_argc; i++) {
 		union drgn_lazy_object param;
 		struct drgn_ctf_thunk_arg *arg;
-
-		if (argtypes[i] == 0 && i + 1 == funcinfo.ctc_argc) {
-			variadic = true;
-			break;
-		}
 
 		arg = calloc(1, sizeof(*arg));
 		if (!arg) {
