@@ -1150,10 +1150,13 @@ static int process_type(ctf_id_t type, void *void_arg)
 {
 	struct drgn_ctf_arg *arg = void_arg;
 	int kind = ctf_type_kind(arg->dict, type);
+	ctf_id_t dst;
 	int ret = 0;
 	const char *name;
 	switch (kind) {
 	case CTF_K_ENUM:
+		if (ctf_type_reference(arg->dict, type) != CTF_ERR)
+			return 0; /* It's a SLICE! */
 		arg->type = type;
 		ret = ctf_enum_iter(arg->dict, type, process_enumerator, void_arg);
 		/* For CTF errors, set a drgn error immediately */
@@ -1161,25 +1164,33 @@ static int process_type(ctf_id_t type, void *void_arg)
 			arg->err = drgn_error_ctf(get_ctf_errno(arg->dict));
 		}
 		if (ret)
-			break;
+			return ret;
 
 		arg->type = 0;
-		fallthrough;
-
+		break;
 	case CTF_K_INTEGER:
 	case CTF_K_FLOAT:
+		if (ctf_type_reference(arg->dict, type) != CTF_ERR)
+			return 0; /* It's a SLICE! */
+		break;
 	case CTF_K_TYPEDEF:
+		dst = ctf_type_reference(arg->dict, type);
+		if (ctf_type_kind(arg->dict, dst) == CTF_K_TYPEDEF
+		    && strcmp(ctf_type_name_raw(arg->dict, type),
+			      ctf_type_name_raw(arg->dict, dst)) == 0)
+			return 0; /* It's a SLICE! */
+		break;
 	case CTF_K_STRUCT:
 	case CTF_K_UNION:
-		name = ctf_type_name_raw(arg->dict, type);
-		if (name && *name) {
-			arg->err = canonical_atom(arg->info, name,
-						  arg->dict, type);
-			ret = arg->err ? -1 : 0;
-		}
 		break;
 	default:
-		break;
+		return 0;
+	}
+	name = ctf_type_name_raw(arg->dict, type);
+	if (name && *name) {
+		arg->err = canonical_atom(arg->info, name,
+						arg->dict, type);
+		ret = arg->err ? -1 : 0;
 	}
 	return ret;
 }
