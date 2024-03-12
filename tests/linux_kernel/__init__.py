@@ -22,6 +22,8 @@ import drgn
 from tests import TestCase
 from util import NORMALIZED_MACHINE_NAME, SYS
 
+TESTING_CTF = bool(int(os.environ.get("DRGN_TEST_CTF", "0")))
+
 
 class LinuxKernelTestCase(TestCase):
     prog = None
@@ -34,7 +36,15 @@ class LinuxKernelTestCase(TestCase):
             paths.append(os.environ["DRGN_TEST_KMOD"])
         except KeyError:
             pass
-        prog.load_debug_info(paths, True)
+        if TESTING_CTF:
+            from _drgn import _linux_helper_load_module_ctf
+            from drgn.helpers.linux.ctf import load_ctf
+
+            load_ctf(prog)
+            if paths:
+                _linux_helper_load_module_ctf(prog, "drgn_test", paths[0])
+        else:
+            prog.load_debug_info(paths, True)
 
     @classmethod
     def setUpClass(cls):
@@ -92,6 +102,10 @@ class LinuxKernelTestCase(TestCase):
 
 skip_unless_have_test_kmod = unittest.skipUnless(
     "DRGN_TEST_KMOD" in os.environ, "test requires drgn_test Linux kernel module"
+)
+
+skip_unless_have_dwarf = unittest.skipIf(
+    TESTING_CTF, "test requires DWARF debuginfo (have CTF)"
 )
 
 skip_unless_have_test_disk = unittest.skipUnless(

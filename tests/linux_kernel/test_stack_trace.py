@@ -9,22 +9,29 @@ from tests import assertReprPrettyEqualsStr, modifyenv
 from tests.linux_kernel import (
     LinuxKernelTestCase,
     fork_and_stop,
+    skip_unless_have_dwarf,
     skip_unless_have_stack_tracing,
     skip_unless_have_test_kmod,
 )
 from util import NORMALIZED_MACHINE_NAME
 
 
+def frame_name(frame):
+    if frame.name is not None:
+        return frame.name
+    return frame.symbol().name  # allow lookup error
+
+
 @skip_unless_have_stack_tracing
 class LinuxKernelStackTraceTestCase(LinuxKernelTestCase):
     def _test_drgn_test_kthread_trace(self, trace):
         for i, frame in enumerate(trace):
-            if frame.name == "drgn_test_kthread_fn3":
+            if frame_name(frame) == "drgn_test_kthread_fn3":
                 break
         else:
             self.fail("Couldn't find drgn_test_kthread_fn3 frame")
-        self.assertEqual(trace[i + 1].name, "drgn_test_kthread_fn2")
-        self.assertEqual(trace[i + 2].name, "drgn_test_kthread_fn")
+        self.assertEqual(frame_name(trace[i + 1]), "drgn_test_kthread_fn2")
+        self.assertEqual(frame_name(trace[i + 2]), "drgn_test_kthread_fn")
 
 
 class TestStackTrace(LinuxKernelStackTraceTestCase):
@@ -47,6 +54,7 @@ class TestStackTrace(LinuxKernelStackTraceTestCase):
                 prog.stack_trace(prog["drgn_test_kthread"].pid)
             )
 
+    @skip_unless_have_dwarf
     @skip_unless_have_test_kmod
     def test_by_pid_dwarf(self):
         self._test_by_pid(False)
@@ -65,6 +73,7 @@ class TestStackTrace(LinuxKernelStackTraceTestCase):
         self._test_drgn_test_kthread_trace(self.prog.stack_trace(pt_regs))
         self._test_drgn_test_kthread_trace(self.prog.stack_trace(pt_regs.address_of_()))
 
+    @skip_unless_have_dwarf
     @skip_unless_have_test_kmod
     def test_stack_trace_from_pcs(self):
         if not self.prog["drgn_test_have_stacktrace"]:
@@ -82,6 +91,7 @@ class TestStackTrace(LinuxKernelStackTraceTestCase):
             )
         )
 
+    @skip_unless_have_dwarf
     @skip_unless_have_test_kmod
     def test_local_variable(self):
         for frame in self.prog.stack_trace(self.prog["drgn_test_kthread"]):
@@ -93,6 +103,7 @@ class TestStackTrace(LinuxKernelStackTraceTestCase):
         self.assertEqual(frame["b"], 2)
         self.assertEqual(frame["c"], 3)
 
+    @skip_unless_have_dwarf
     @skip_unless_have_test_kmod
     def test_locals(self):
         task = self.prog["drgn_test_kthread"]
@@ -104,6 +115,7 @@ class TestStackTrace(LinuxKernelStackTraceTestCase):
         else:
             self.fail("Couldn't find drgn_test_kthread_fn3 frame")
 
+    @skip_unless_have_dwarf
     def test_registers(self):
         # Smoke test that we get at least one register and that
         # StackFrame.registers() agrees with StackFrame.register().
