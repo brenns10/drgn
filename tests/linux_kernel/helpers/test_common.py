@@ -10,6 +10,7 @@ from drgn.helpers.common.stack import print_annotated_stack
 from drgn.helpers.linux.mm import pfn_to_virt
 from tests.linux_kernel import (
     HAVE_FULL_MM_SUPPORT,
+    TESTING_CTF,
     LinuxKernelTestCase,
     fork_and_stop,
     skip_unless_have_full_mm_support,
@@ -111,4 +112,10 @@ class TestPrintAnnotatedStack(LinuxKernelTestCase):
             if HAVE_FULL_MM_SUPPORT and not self.prog["drgn_test_slob"]:
                 self.assertIn("slab object: task_struct", printed_trace)
             self.assertIn("[function symbol: schedule", printed_trace)
-            self.assertIn("schedule at ", printed_trace)
+
+            # When running with CTF, there's no DWARF for the stack frame
+            # ".name" field, and so the output will only contain a symbol,
+            # this is expected.
+            if not TESTING_CTF:
+                self.assertIn("schedule at ", printed_trace)
+            self.assertIn("(__schedule+0x", printed_trace)

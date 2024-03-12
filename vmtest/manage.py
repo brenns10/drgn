@@ -60,6 +60,7 @@ IGNORE_KERNEL_RANGES = (
 # this script usually runs in GitHub Actions.
 LINUX_GIT_URL = "https://github.com/torvalds/linux.git"
 STABLE_LINUX_GIT_URL = "https://github.com/gregkh/linux.git"
+CTF_GIT_URL = "https://github.com/oracle/dtrace-linux-kernel.git"
 
 
 async def get_latest_kernel_tags() -> List[str]:
@@ -131,6 +132,28 @@ async def fetch_kernel_tags(kernel_dir: Path, kernel_tags: Sequence[str]) -> Non
                 url,
                 *(f"refs/tags/{tag}:refs/tags/{tag}" for tag in tags),
             )
+
+
+async def fetch_ctf_branches(kernel_dir: Path) -> List[str]:
+    refs = await check_output("git", "ls-remote", "--refs", CTF_GIT_URL)
+    branches: List[str] = []
+    for match in re.finditer(
+        r"^[a-f0-9]+\s+refs/heads/(v2/[0-9]+\.[0-9]+)$",
+        refs.decode(),
+        re.M,
+    ):
+        branches.append(match.group(1))
+    logger.info("fetching CTF kernel branches: %s", ", ".join(branches))
+    await check_call(
+        "git",
+        "-C",
+        str(kernel_dir),
+        "fetch",
+        "--depth",
+        "50",  # an arbitrary limit which should be more than enough for CTF patches
+        CTF_GIT_URL,
+        *(f"refs/heads/{branch}:refs/heads/{branch}" for branch in branches),
+    )
 
 
 async def build_kernels(
@@ -244,6 +267,12 @@ async def main() -> None:
         default=argparse.SUPPRESS,
     )
     parser.add_argument(
+        "-k",
+        "--kernel",
+        default=None,
+        help="build kernel single kernel version",
+    )
+    parser.add_argument(
         "--no-build",
         dest="build",
         action="store_false",
@@ -290,6 +319,9 @@ async def main() -> None:
         help="directory to download assets to",
     )
     args = parser.parse_args()
+
+    if args.kernel:
+        args.latest_kernels = True
 
     if not hasattr(args, "architectures") or "all" in args.architectures:
         args.architectures = list(ARCHITECTURES.values())
@@ -343,6 +375,8 @@ async def main() -> None:
         if args.latest_kernels:
             logger.info("latest kernel versions: %s", ", ".join(latest_kernel_tags))
             for tag in latest_kernel_tags:
+                if args.kernel is not None and tag != args.kernel:
+                    continue
                 tag_arches_to_build = []
                 for arch in args.architectures:
                     arch_kernel_releases = kernel_releases.get(arch.name, {})
@@ -393,6 +427,7 @@ async def main() -> None:
                 await fetch_kernel_tags(
                     args.kernel_directory, [tag for tag, _ in to_build]
                 )
+                await fetch_ctf_branches(args.kernel_directory)
 
                 async for kernel_package in build_kernels(
                     args.kernel_directory,

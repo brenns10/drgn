@@ -180,7 +180,15 @@ if __name__ == "__main__":
         action="store_true",
         help="run local tests",
     )
+    parser.add_argument(
+        "-c",
+        "--ctf",
+        action="store_true",
+        help="run kernel tests with CTF support",
+    )
     args = parser.parse_args()
+    if args.ctf:
+        os.environ["DRGN_TEST_CTF"] = "1"
 
     if not hasattr(args, "kernels") and not args.local:
         parser.error("at least one of -k/--kernel or -l/--local is required")
@@ -317,6 +325,7 @@ chroot "$1" sh -c 'cd /mnt && pytest -v --ignore=tests/linux_kernel'
 set -e
 
 export PYTHON={shlex.quote(python_executable)}
+export DRGN_TEST_CTF={1 if args.ctf else 0}
 export DRGN_RUN_LINUX_KERNEL_TESTS=1
 if [ -e /proc/vmcore ]; then
     "$PYTHON" -Bm pytest -v tests/linux_kernel/vmcore

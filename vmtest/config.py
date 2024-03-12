@@ -190,6 +190,7 @@ KERNEL_FLAVORS = OrderedDict(
                 # For slab tests.
                 CONFIG_SLUB_DEBUG=y
                 CONFIG_RANDOMIZE_BASE=y
+                CONFIG_CTF=y
             """,
         ),
         KernelFlavor(
