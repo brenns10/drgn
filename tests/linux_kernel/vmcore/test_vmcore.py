@@ -4,6 +4,7 @@
 from _drgn_util.platform import NORMALIZED_MACHINE_NAME
 from drgn import ProgramFlags
 from drgn.helpers.linux.pid import find_task
+from tests.linux_kernel import skip_unless_have_dwarf
 from tests.linux_kernel.vmcore import LinuxVMCoreTestCase
 
 
@@ -53,16 +54,19 @@ class TestVMCore(LinuxVMCoreTestCase):
         # why anyone would run these tests from kdump otherwise.
         self.assertEqual(crashed_thread.object.comm.string_(), b"selfdestruct")
 
+    @skip_unless_have_dwarf  # ORC entry is UNKNOWN for __crash_kexec
     def test_crashed_thread_stack_trace(self):
         self._skip_if_cpu0_on_s390x()
         self.assertIn("sysrq", str(self.prog.crashed_thread().stack_trace()))
 
+    @skip_unless_have_dwarf  # ORC entry is UNKNOWN for __crash_kexec
     def test_crashed_thread_stack_trace_by_tid(self):
         self._skip_if_cpu0_on_s390x()
         self.assertIn(
             "sysrq", str(self.prog.stack_trace(self.prog.crashed_thread().tid))
         )
 
+    @skip_unless_have_dwarf  # ORC entry is UNKNOWN for __crash_kexec
     def test_crashed_thread_stack_trace_by_task_struct(self):
         self._skip_if_cpu0_on_s390x()
         self.assertIn(

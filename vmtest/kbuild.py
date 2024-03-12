@@ -138,6 +138,14 @@ _PATCHES = (
         name="s390-crash-fix-proc-vmcore-reads.patch",
         versions=((KernelVersion("5.18"), KernelVersion("6.0")),),
     ),
+    _Patch(
+        name="v6.6..v2/6.6",
+        versions=((KernelVersion("6.6"), KernelVersion("6.7")),),
+    ),
+    _Patch(
+        name="v6.7..v2/6.7",
+        versions=((KernelVersion("6.7"), KernelVersion("6.8")),),
+    ),
 )
 
 
@@ -160,6 +168,11 @@ async def apply_patches(kernel_dir: Path) -> None:
             continue
         logger.info("applying %s", patch.name)
         any_applied = True
+        patch_file = patch_dir / patch.name
+        if not patch_file.is_file():
+            logger.info("patch is a git cherry-pick")
+            await check_call("git", "-C", kernel_dir, "cherry-pick", patch.name)
+            continue
         proc = await asyncio.create_subprocess_exec(
             "git",
             "apply",
@@ -548,6 +561,30 @@ MODULE_LICENSE("GPL");
                 *make_args,
                 "INSTALL_MOD_PATH=" + str(install_dir.resolve()),
                 "modules_install",
+                stdout=self._build_stdout,
+                stderr=self._build_stderr,
+                env=self._env,
+            )
+            # Unfortunately, the CTF makefile targets have unexpressed
+            # dependencies:
+            # ctf: depends on modules_install
+            # ctf_install: depends on ctf
+            # So we have to call each target separately.
+            logger.info("building & installing CTF")
+            await check_call(
+                "make",
+                *make_args,
+                "INSTALL_MOD_PATH=" + str(install_dir.resolve()),
+                "ctf",
+                stdout=self._build_stdout,
+                stderr=self._build_stderr,
+                env=self._env,
+            )
+            await check_call(
+                "make",
+                *make_args,
+                "INSTALL_MOD_PATH=" + str(install_dir.resolve()),
+                "ctf_install",
                 stdout=self._build_stdout,
                 stderr=self._build_stderr,
                 env=self._env,

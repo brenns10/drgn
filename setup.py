@@ -177,6 +177,11 @@ class test(Command):
             f"({', '.join(KERNEL_FLAVORS)}) instead of just the default flavor",
         ),
         (
+            "ctf",
+            "c",
+            "run Linux kernel tests with CTF support, if available",
+        ),
+        (
             "extra-kernels=",
             "k",
             "additional kernels to run Linux kernel helper tests on in a virtual machine "
@@ -193,6 +198,7 @@ class test(Command):
         self.kernel = False
         self.flavor = "default"
         self.all_kernel_flavors = False
+        self.ctf = False
         self.extra_kernels = ""
         self.vmtest_dir = None
 
@@ -205,6 +211,8 @@ class test(Command):
                 for kernel in SUPPORTED_KERNEL_VERSIONS
                 for flavor in flavors
             )
+        if self.ctf:
+            os.environ["DRGN_TEST_CTF"] = "1"
         if self.vmtest_dir is None:
             build_base = self.get_finalized_command("build").build_base
             self.vmtest_dir = os.path.join(build_base, "vmtest")
@@ -233,6 +241,7 @@ class test(Command):
 set -e
 
 export PYTHON={shlex.quote(sys.executable)}
+export DRGN_TEST_CTF={1 if self.ctf else 0}
 if [ -e /proc/vmcore ]; then
     "$PYTHON" -Bm unittest discover -t . -s tests/linux_kernel/vmcore {"-v" if self.verbose else ""}
 else
