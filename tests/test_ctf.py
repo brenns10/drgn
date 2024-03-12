@@ -32,7 +32,7 @@ ENUMERATOR_VALUES = {
 
 
 def fake_symbol_finder(
-    name: Optional[str], address: Optional[str], one: bool
+    prog: Program, name: Optional[str], address: Optional[str], one: bool
 ) -> List[Symbol]:
     if one and name is not None:
         return [Symbol(name, 0, 0, SymbolBinding.GLOBAL, SymbolKind.OBJECT)]
@@ -275,7 +275,7 @@ class TestCtf(TestTypes, TestCase):
             raise SkipTest("Drgn is not built with CTF enabled")
         # fake symbol finder so that we can lookup variable types, despite not
         # having a symbol table
-        cls.prog.add_symbol_finder(fake_symbol_finder)
+        cls.prog.register_symbol_finder("test", fake_symbol_finder, enable_index=0)
 
 
 class TestDwarf2Ctf(TestTypes, TestCase):
@@ -291,4 +291,4 @@ class TestDwarf2Ctf(TestTypes, TestCase):
             raise SkipTest("Drgn is not built with CTF enabled")
         # fake symbol finder so that we can lookup variable types, despite not
         # having a symbol table
-        cls.prog.add_symbol_finder(fake_symbol_finder)
+        cls.prog.register_symbol_finder("test", fake_symbol_finder, enable_index=0)
