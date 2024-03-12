@@ -35,7 +35,12 @@ struct drgn_ctf_enumnode {
 DEFINE_HASH_MAP(drgn_ctf_enums, const char *, struct drgn_ctf_enumnode,
 		c_string_key_hash_pair, c_string_key_eq);
 
-DEFINE_HASH_MAP(drgn_ctf_dicts, const char *, ctf_dict_t *,
+struct drgn_ctf_dicts_value {
+	ctf_dict_t *dict;
+	ctf_archive_t *arc;
+};
+
+DEFINE_HASH_MAP(drgn_ctf_dicts, const char *, struct drgn_ctf_dicts_value,
 		c_string_key_hash_pair, c_string_key_eq);
 
 struct drgn_ctf_key {
@@ -75,6 +80,11 @@ struct drgn_ctf_info {
 
 struct drgn_error *
 drgn_program_load_ctf(struct drgn_program *prog, const char *file, struct drgn_ctf_info **ret);
+
+struct drgn_error *
+drgn_program_load_module_ctf(struct drgn_program *prog,
+			     const char *module,
+			     const char *file);
 
 void drgn_ctf_destroy(struct drgn_ctf_info *info);
 
