@@ -11,7 +11,7 @@ import io
 from pathlib import Path
 import struct
 import sys
-from typing import Iterator, List, NamedTuple, Sequence, Tuple
+from typing import Iterator, List, NamedTuple, Optional, Sequence, Tuple
 
 from drgn import (
     Architecture,
@@ -72,8 +72,11 @@ class Phdr(NamedTuple):
 
 
 def vma_snapshot(
-    page_size: int, task: Object
+    page_size: int, task: Object, stack_pointers: Sequence[int],
 ) -> Tuple[Sequence[Segment], Sequence[MappedFile]]:
+    # When "stack_pointers" is non-empty, it is considered to be a list of stack
+    # pointers. We will only include special mappings (like vDSO) and the VMA
+    # regions associated with those stack pointers.
     gate_vma = task.prog_["gate_vma"].address_of_()
     special_mapping_name = task.prog_["special_mapping_name"]
 
@@ -94,6 +97,14 @@ def vma_snapshot(
                 )
         return False
 
+    def is_stack(start: int, end: int) -> Optional[int]:
+        # Return the stack pointer for this region if it is a stack,
+        # otherwise None
+        for sp in stack_pointers:
+            if start <= sp < end:
+                return sp
+        return None
+
     def add_vma(vma: Object) -> None:
         start = vma.vm_start.value_()
         end = vma.vm_end.value_()
@@ -110,12 +121,25 @@ def vma_snapshot(
 
         # Dumbed down version of vma_dump_size() assuming
         # (MMF_DUMP_ANON_PRIVATE|MMF_DUMP_ANON_SHARED).
+        # This version includes logic to filter to only include stack regions
+        segment_start = start
         if always_dump_vma(vma):
             dump_size = end - start
         elif flags & (VM_IO | VM_DONTDUMP):
             dump_size = 0
         elif vma.anon_vma or ((flags & VM_SHARED) and file.f_inode.i_nlink == 0):
             dump_size = end - start
+            sp = is_stack(start, end)
+            if sp is not None:
+                # Only include the sp..end region, the rest is irrelevant and
+                # likely not even faulted in
+                segment_start = (sp // page_size) * page_size
+                dump_size = end - segment_start
+            elif not stack_pointers:
+                # stack_pointers is empty - dump all anonymous mappings
+                dump_size = end - start
+            else:
+                dump_size = 0
         elif (
             file
             and vma.vm_pgoff == 0
@@ -132,7 +156,7 @@ def vma_snapshot(
 
         if (
             segments
-            and segments[-1].end == start
+            and segments[-1].end == segment_start
             and segments[-1].p_flags == p_flags
             and (
                 dump_size == 0
@@ -148,7 +172,7 @@ def vma_snapshot(
         else:
             segments.append(
                 Segment(
-                    start=start,
+                    start=segment_start,
                     end=end,
                     p_flags=p_flags,
                     dump_size=dump_size,
@@ -195,6 +219,12 @@ def _nt_pids(task: Object) -> Tuple[int, int, int, int]:
         task.tgid.value_(),  # pgrp
         task.signal.pids[prog["PIDTYPE_SID"]].numbers[0].nr.value_(),  # sid
     )
+
+
+def task_stack_pointer(task: Object) -> int:
+    regs_ptr = task.stack.value_() + (4096 << 2) - 21 * 8
+    regs = Object(prog, "struct user_regs_struct *", value=regs_ptr)
+    return regs.sp.value_()
 
 
 def nt_prstatus(task: Object) -> bytes:
@@ -311,6 +341,14 @@ def nt_file(mapped_files: Sequence[MappedFile], page_size: int) -> bytes:
     return buf
 
 
+def for_each_thread(task: Object) -> Iterator[Object]:
+    for t in list_for_each_entry(
+        task.type_.type, task.signal.thread_head.address_of_(), "thread_node"
+    ):
+        if t != task:
+            yield t
+
+
 def gen_notes(
     task: Object, mapped_files: Sequence[MappedFile], page_size: int, use_procfs: bool
 ) -> bytearray:
@@ -330,11 +368,8 @@ def gen_notes(
             )
 
     add_nt_prstatus(task)
-    for t in list_for_each_entry(
-        task.type_.type, task.signal.thread_head.address_of_(), "thread_node"
-    ):
-        if t != task:
-            add_nt_prstatus(t)
+    for t in for_each_thread(task):
+        add_nt_prstatus(t)
 
     notes.append(
         (
@@ -417,6 +452,13 @@ def try_read_memory_remote(
         size -= page_size
 
 
+def all_thread_stacks(task: Object) -> Sequence[int]:
+    stacks = [task_stack_pointer(task)]
+    for t in for_each_thread(task):
+        stacks.append(task_stack_pointer(t))
+    return stacks
+
+
 def main(prog: Program, argv: Sequence[str]) -> None:
     parser = argparse.ArgumentParser(
         description="Capture a process core dump without stopping it or from a kernel core dump (using drgn)"
@@ -428,6 +470,12 @@ def main(prog: Program, argv: Sequence[str]) -> None:
         help="don't use the proc filesystem to get information about the process even when the process is local; "
         "this will skip memory that is paged out and is slower, "
         "but it can be useful if the mmap lock is deadlocked",
+    )
+    parser.add_argument(
+        "--stack-only",
+        dest="stack_only",
+        action="store_true",
+        help="only include stack segments (use gcore-pstack.py to print stack trace for the resulting dump)",
     )
     parser.add_argument("pid", type=int, help="PID of process to capture")
     parser.add_argument("core", type=str, help="output file")
@@ -464,7 +512,9 @@ def main(prog: Program, argv: Sequence[str]) -> None:
     if not task:
         sys.exit(f"PID {args.pid} not found")
 
-    segments, mapped_files = vma_snapshot(page_size, task)
+    stack_pointers = all_thread_stacks(task) if args.stack_only else []
+
+    segments, mapped_files = vma_snapshot(page_size, task, stack_pointers)
     notes = gen_notes(task, mapped_files, page_size, args.use_procfs)
 
     with contextlib.ExitStack() as exit_stack:
