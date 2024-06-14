@@ -222,6 +222,8 @@ static PyMethodDef drgn_methods[] = {
 	 METH_VARARGS | METH_KEYWORDS},
 	{"_linux_helper_load_module_ctf", (PyCFunction)drgnpy_linux_helper_load_module_ctf,
 	 METH_VARARGS | METH_KEYWORDS},
+	{"_linux_helper_load_btf", (PyCFunction)drgnpy_linux_helper_load_btf,
+	 METH_VARARGS | METH_KEYWORDS},
 	{},
 };
 
