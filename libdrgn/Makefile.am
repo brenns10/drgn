@@ -52,6 +52,8 @@ libdrgn_common_la_SOURCES = $(ARCH_DEFS_PYS:_defs.py=.c) \
 			    binary_search_tree.h \
 			    bitmap.h \
 			    bitops.h \
+			    btf.c \
+			    btf.h \
 			    c_keywords.inc \
 			    c_lexer.h \
 			    cfi.c \

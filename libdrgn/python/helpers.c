@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #include "drgnpy.h"
+#include "../btf.h"
 #include "../helpers.h"
 #include "../kallsyms.h"
 #include "../program.h"
@@ -361,4 +362,22 @@ drgnpy_linux_helper_load_builtin_kallsyms(PyObject *self, PyObject *args,
 	if (err)
 		return set_drgn_error(err);
 	return (PyObject *)no_cleanup_ptr(index);
+}
+
+PyObject *drgnpy_linux_helper_load_btf(PyObject *self, PyObject *args,
+				       PyObject *kwds)
+
+{
+	static char *keywords[] = {"prog", NULL};
+	Program *prog;
+	if (!PyArg_ParseTupleAndKeywords(args, kwds, "O!:load_btf",
+					 keywords, &Program_type, &prog))
+		return NULL;
+
+	struct drgn_error *err = drgn_program_load_btf(&prog->prog);
+	if (err) {
+		set_drgn_error(err);
+		return NULL;
+	}
+	return Py_None;
 }
