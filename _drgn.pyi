@@ -1944,6 +1944,16 @@ class Module:
         """
         ...
 
+    def load_btf(
+        self,
+    ) -> None:
+        """
+        Load the built-in BTF file for this module.
+
+        TODO
+        """
+        ...
+
     def try_file(
         self,
         path: Path,

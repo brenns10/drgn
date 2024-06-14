@@ -19,6 +19,7 @@
 #include <libelf.h>
 
 #include "binary_search_tree.h"
+#include "btf_info.h"
 #include "cfi.h"
 #include "debug_info_options.h"
 #include "drgn_internal.h"
@@ -106,6 +107,8 @@ struct drgn_debug_info {
 	struct drgn_module *modules_pending_indexing;
 	/** DWARF debugging information. */
 	struct drgn_dwarf_info dwarf;
+	/** BTF type information. */
+	struct drgn_btf_info btf;
 
 	struct drgn_handler_list debug_info_finders;
 	struct drgn_debug_info_finder standard_debug_info_finder;
@@ -263,6 +266,8 @@ struct drgn_module {
 	struct drgn_elf_symbol_table elf_symtab;
 	/** Symbol table from the gnu_debugdata_file */
 	struct drgn_elf_symbol_table gnu_debugdata_symtab;
+	/** BTF type information */
+	struct drgn_module_btf_info btf;
 
 	/** Whether .debug_frame has been parsed. */
 	bool parsed_debug_frame;

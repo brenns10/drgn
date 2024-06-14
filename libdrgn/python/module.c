@@ -180,6 +180,17 @@ static PyObject *Module_try_file(Module *self, PyObject *args, PyObject *kwds)
 	Py_RETURN_NONE;
 }
 
+static PyObject *Module_load_btf(Module *self, PyObject *args, PyObject *kwds)
+
+{
+	struct drgn_error *err = drgn_module_load_btf(self->module);
+	if (err) {
+		set_drgn_error(err);
+		return NULL;
+	}
+	Py_RETURN_NONE;
+}
+
 static Program *Module_get_prog(Module *self, void *arg)
 {
 	Program *prog = Module_prog(self);
@@ -496,6 +507,8 @@ static PyMethodDef Module_methods[] = {
 	 drgn_Module_wanted_supplementary_debug_file_DOC},
 	{"try_file", (PyCFunction)Module_try_file,
 	 METH_VARARGS | METH_KEYWORDS, drgn_Module_try_file_DOC},
+	{"load_btf", (PyCFunction)Module_load_btf,
+	 METH_VARARGS | METH_KEYWORDS, drgn_Module_load_btf_DOC},
 	{},
 };
 
