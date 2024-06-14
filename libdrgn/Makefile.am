@@ -46,6 +46,8 @@ libdrgnimpl_la_SOURCES = $(ARCH_DEFS_PYS:_defs.py=.c) \
 			 binary_search.h \
 			 binary_search_tree.h \
 			 bitops.h \
+			 btf.h \
+			 btf.c \
 			 c_keywords.inc \
 			 c_lexer.h \
 			 cfi.c \
