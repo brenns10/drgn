@@ -217,6 +217,8 @@ static PyMethodDef drgn_methods[] = {
 	 METH_VARARGS | METH_KEYWORDS},
 	{"_linux_helper_load_orc", (PyCFunction)drgnpy_linux_helper_load_orc,
 	 METH_VARARGS | METH_KEYWORDS},
+	{"_linux_helper_load_btf", (PyCFunction)drgnpy_linux_helper_load_btf,
+	 METH_VARARGS | METH_KEYWORDS},
 	{},
 };
 
