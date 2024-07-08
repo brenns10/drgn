@@ -209,6 +209,13 @@ def _main() -> None:
         "which is assumed not to correspond to a loaded executable, library, or module. "
         "This option may be given more than once",
     )
+    default_symbols_group.add_argument(
+        "--ctf",
+        "-C",
+        dest="ctf",
+        action="store_true",
+        help="use CTF rather than DWARF debuginfo",
+    )
 
     advanced_group = parser.add_argument_group("advanced")
     advanced_group.add_argument(
@@ -311,10 +318,30 @@ def _main() -> None:
 
     if args.default_symbols is None:
         args.default_symbols = {"default": True, "main": True}
-    try:
-        prog.load_debug_info(args.symbols, **args.default_symbols)
-    except drgn.MissingDebugInfoError as e:
-        logger.warning("\033[1m%s\033[m" if color else "%s", e)
+    banner_func = None
+    if args.ctf:
+        try:
+            from drgn.helpers.linux.ctf import load_ctf
+
+            if not args.symbols:
+                ctfa = None
+            elif len(args.symbols) == 1:
+                ctfa = args.symbols[0]
+            else:
+                sys.exit("error: CTF accepts only one -s argument")
+            load_ctf(prog, ctfa)
+
+            def ctf_banner(s: str) -> str:
+                return "Note: using CTF debuginfo\n" + s
+
+            banner_func = ctf_banner
+        except (ImportError, ModuleNotFoundError):
+            sys.exit("error: CTF support is not available")
+    else:
+        try:
+            prog.load_debug_info(args.symbols, **args.default_symbols)
+        except drgn.MissingDebugInfoError as e:
+            logger.warning("\033[1m%s\033[m" if color else "%s", e)
 
     if args.extra_symbols:
         for extra_symbol_path in args.extra_symbols:
@@ -331,7 +358,7 @@ def _main() -> None:
         drgn.set_default_prog(prog)
         runpy.run_path(script, init_globals={"prog": prog}, run_name="__main__")
     else:
-        run_interactive(prog)
+        run_interactive(prog, banner_func=banner_func)
 
 
 def run_interactive(
