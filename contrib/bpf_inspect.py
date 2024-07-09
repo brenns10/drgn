@@ -213,16 +213,16 @@ class BpfProgArrayMap(BpfMap):
         array = self.get_prog_array()
         poke_progs = self.get_poke_progs()
 
-        owner_str = f"{"owner:":9} {owner}" if owner else ""
+        owner_str = f"{'owner:':9} {owner}" if owner else ""
         array_str = (
             "\n\t".join(
-                f"{f"idx[{index:>3}]:":9} {BpfProg(prog)}" for index, prog in array
+                f"{f'idx[{index:>3}]:':9} {BpfProg(prog)}" for index, prog in array
             )
             if array
             else ""
         )
         poke_progs_str = (
-            "\n\t".join(f"{"poke:":9} {BpfProg(poke)}" for poke in poke_progs)
+            "\n\t".join(f"{'poke:':9} {BpfProg(poke)}" for poke in poke_progs)
             if poke_progs
             else ""
         )
@@ -316,7 +316,7 @@ class BpfXdpLink(BpfLink):
         mode = self.get_mode()
 
         ifname, ifindex = dev.name.string_().decode(), dev.ifindex.value_()
-        return f"{"netdev:":<9} {ifname}({ifindex})" + f"\n\t{"mode:":<9} {mode}"
+        return f"{'netdev:':<9} {ifname}({ifindex})" + f"\n\t{'mode:':<9} {mode}"
 
 
 def show_bpf_link_details(link):
