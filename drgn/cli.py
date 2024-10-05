@@ -359,6 +359,16 @@ def _load_debugging_symbols(prog: drgn.Program, args: argparse.Namespace) -> Non
             logger.info("Using CTF debuginfo")
         except (ImportError, ModuleNotFoundError):
             sys.exit("error: CTF support is not available")
+    elif args.btf:
+        try:
+            from drgn.helpers.linux.btf import load_btf
+
+            if args.symbols:
+                sys.exit("error: BTF cannot accept a -s argument")
+            load_btf(prog)
+            logger.info("Using BTF debuginfo")
+        except (ImportError, ModuleNotFoundError):
+            sys.exit("error: BTF support is not available")
     else:
         try:
             prog.load_debug_info(args.symbols, **args.default_symbols)
@@ -524,6 +534,13 @@ def _main() -> None:
         dest="ctf",
         action="store_true",
         help="use CTF rather than DWARF debuginfo",
+    )
+    symbol_group.add_argument(
+        "--btf",
+        "-B",
+        dest="btf",
+        action="store_true",
+        help="use BTF rather than DWARF debuginfo",
     )
 
 
