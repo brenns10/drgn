@@ -320,6 +320,13 @@ def _main() -> None:
         action="store_true",
         help="use CTF rather than DWARF debuginfo",
     )
+    symbol_group.add_argument(
+        "--btf",
+        "-B",
+        dest="btf",
+        action="store_true",
+        help="use BTF rather than DWARF debuginfo",
+    )
 
     advanced_group = parser.add_argument_group("advanced")
     advanced_group.add_argument(
@@ -467,6 +474,20 @@ def _main() -> None:
             banner_func = ctf_banner
         except (ImportError, ModuleNotFoundError):
             sys.exit("error: CTF support is not available")
+    elif args.btf:
+        try:
+            from drgn.helpers.linux.btf import load_btf
+
+            if args.symbols:
+                sys.exit("error: BTF cannot accept a -s argument")
+            load_btf(prog)
+
+            def btf_banner(s: str) -> str:
+                return "Note: using BTF debuginfo\n" + s
+
+            banner_func = btf_banner
+        except (ImportError, ModuleNotFoundError):
+            sys.exit("error: BTF support is not available")
     else:
         try:
             prog.load_debug_info(args.symbols, **args.default_symbols)
