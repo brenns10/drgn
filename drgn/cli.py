@@ -381,20 +381,32 @@ def _load_debugging_symbols(prog: drgn.Program, args: argparse.Namespace) -> Non
 
     if args.default_symbols is None:
         args.default_symbols = {"default": True, "main": True}
-    try:
-        prog.load_debug_info(args.symbols, **args.default_symbols)
-    except drgn.MissingDebugInfoError as e:
-        if args.default_symbols.get("main"):
-            try:
-                main_module = prog.main_module()
-                critical = (
-                    main_module.wants_debug_file() or main_module.wants_loaded_file()
-                )
-            except LookupError:
-                critical = True
-        else:
-            critical = False
-        logger.log(logging.CRITICAL if critical else logging.WARNING, "%s", e)
+
+    if args.btf:
+        try:
+            from drgn.helpers.linux.btf import load_btf
+
+            if args.symbols:
+                sys.exit("error: BTF cannot accept a -s argument")
+            load_btf(prog)
+            logger.info("Using BTF debuginfo")
+        except (ImportError, ModuleNotFoundError):
+            sys.exit("error: BTF support is not available")
+    else:
+        try:
+            prog.load_debug_info(args.symbols, **args.default_symbols)
+        except drgn.MissingDebugInfoError as e:
+            if args.default_symbols.get("main"):
+                try:
+                    main_module = prog.main_module()
+                    critical = (
+                        main_module.wants_debug_file() or main_module.wants_loaded_file()
+                    )
+                except LookupError:
+                    critical = True
+            else:
+                critical = False
+            logger.log(logging.CRITICAL if critical else logging.WARNING, "%s", e)
 
     if args.extra_symbols:
         for extra_symbol_path in args.extra_symbols:
@@ -535,6 +547,13 @@ def _main() -> None:
         action="store_true",
         help="don't search for the kernel image and loadable kernel modules "
         "in the standard directories or those added by plugins",
+    )
+    symbol_group.add_argument(
+        "--btf",
+        "-B",
+        dest="btf",
+        action="store_true",
+        help="use BTF rather than DWARF debuginfo",
     )
 
     advanced_group = parser.add_argument_group("advanced")
