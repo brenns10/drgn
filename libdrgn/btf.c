@@ -11,7 +11,54 @@
 #include "symbol.h"
 #include "type.h"
 
+const char *kind_names[NR_BTF_KINDS] = {
+	[BTF_KIND_UNKN] = "UNKN",
+	[BTF_KIND_INT] = "INT",
+	[BTF_KIND_PTR] = "PTR",
+	[BTF_KIND_ARRAY] = "ARRAY",
+	[BTF_KIND_STRUCT] = "STRUCT",
+	[BTF_KIND_UNION] = "UNION",
+	[BTF_KIND_ENUM] = "ENUM",
+	[BTF_KIND_FWD] = "FWD",
+	[BTF_KIND_TYPEDEF] = "TYPEDEF",
+	[BTF_KIND_VOLATILE] = "VOLATILE",
+	[BTF_KIND_CONST] = "CONST",
+	[BTF_KIND_RESTRICT] = "RESTRICT",
+	[BTF_KIND_FUNC] = "FUNC",
+	[BTF_KIND_FUNC_PROTO] = "FUNC_PROTO",
+	[BTF_KIND_VAR] = "VAR",
+	[BTF_KIND_DATASEC] = "DATASEC",
+	[BTF_KIND_FLOAT] = "FLOAT",
+	[BTF_KIND_DECL_TAG] = "DECL_TAG",
+	[BTF_KIND_TYPE_TAG] = "TYPE_TAG",
+	[BTF_KIND_ENUM64] = "ENUM64",
+};
+
 DEFINE_VECTOR(type_vector, struct btf_type *);
+
+// Structures to efficiently map a string name to a list of candidate type
+// entries. Each name entry is 16 bytes and it can represent either:
+// 1. A type with a given name (e.g. a typedef foo, or struct foo)
+// 2. A function or variable with a given name
+//    In the case of variables, "addr" gets populated by the DATASEC.
+// 3. An enumerator, in which case type_id points to the enum type, "val" gets
+//    populated by the enumerator value, and is_enum is set to 1.
+struct name_entry {
+	union {
+		uint64_t addr;
+		uint64_t index;
+	};
+	uint32_t type_id;
+	uint16_t unused; // will store a reference to the module BTF
+	uint8_t kind;
+	unsigned int is_enum : 1;
+
+	// For variables: set to 1 if the address resolved via DATASEC
+	unsigned int is_present : 1;
+};
+DEFINE_VECTOR(namelist, struct name_entry);
+DEFINE_HASH_MAP(name_map, const char *, struct namelist,
+		c_string_key_hash_pair, c_string_key_eq);
 
 struct drgn_prog_btf {
 	struct drgn_program *prog;
@@ -48,6 +95,7 @@ struct drgn_prog_btf {
 	 * but for now it is fine.
 	 */
 	struct type_vector index;
+	struct name_map htab;
 
 	/**
 	 * Array which caches the result of drgn_btf_type_create().
@@ -146,24 +194,189 @@ static inline bool btf_type_end(struct drgn_prog_btf *bf, struct btf_type *tp)
 }
 
 /**
- * Index the BTF data for quick access by type ID.
- */
-static struct drgn_error *drgn_btf_index(struct drgn_prog_btf *bf)
-{
-	struct btf_type *tp;
-	for (tp = bf->tp; !btf_type_end(bf, tp); tp = btf_next(tp))
-		if (!type_vector_append(&bf->index, &tp))
-			return &drgn_enomem;
-	return NULL;
-}
-
-/**
  * Given an offset, return a string from the BTF string section.
  */
 static const char *btf_str(struct drgn_prog_btf *bf, uint32_t off)
 {
 	assert(off < bf->hdr->str_len);
 	return (const char *)&bf->str[off];
+}
+
+static bool index_name(struct drgn_prog_btf *bf, const char *name,
+		       struct name_entry *value)
+{
+	struct hash_pair hp = name_map_hash(&name);
+	struct name_map_iterator it =
+		name_map_search_hashed(&bf->htab, &name, hp);
+	if (it.entry && !namelist_append(&it.entry->value, value)) {
+		return false;
+	} else if (!it.entry) {
+		struct name_map_entry entry;
+		entry.key = name;
+		namelist_init(&entry.value);
+		if (!namelist_append(&entry.value, value) ||
+		    name_map_insert_searched(&bf->htab, &entry, hp, NULL) == -1) {
+			namelist_deinit(&entry.value);
+			return false;
+		}
+	}
+	return true;
+}
+
+static bool fixup_var(struct drgn_prog_btf *bf, const char *name,
+		      uint32_t type_id, uint64_t addr)
+{
+	struct hash_pair hp = name_map_hash(&name);
+	struct name_map_iterator it =
+		name_map_search_hashed(&bf->htab, &name, hp);
+	if (it.entry) {
+		struct namelist *l = &it.entry->value;
+		for (uint32_t i = 0; i < namelist_size(l); i++) {
+			struct name_entry *e = namelist_at(l, i);
+			if (e->type_id == type_id) {
+				e->addr = addr;
+				e->is_present = 1;
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+static char *section_symbol_name(const char *name)
+{
+	if (strcmp(name, ".data..percpu") == 0)
+		return strdup("__per_cpu_start");
+	else if (strcmp(name, ".data") == 0)
+		return strdup("_sdata");
+	else if (strcmp(name, ".bss") == 0)
+		return strdup("__bss_start");
+	else if (strcmp(name, ".brk") == 0)
+		return strdup("_brk_start");
+
+	char *new = malloc(strlen(name) + sizeof("__start_"));
+	if (!new)
+		return NULL;
+
+	strcpy(new, "__start_");
+	int out = sizeof("__start_") - 1;
+	int in = 0;
+	while (name[in] == '.')
+		in++;
+	while (name[in]) {
+		if (name[in] == '.')
+			new[out] = '_';
+		else
+			new[out] = name[in];
+		out++;
+		in++;
+	}
+	new[out] = '\0';
+	return new;
+}
+
+static struct drgn_error *find_section_base(struct drgn_program *prog,
+					    const char *name,
+					    uint64_t *ret)
+{
+	struct drgn_error *err;
+
+	_cleanup_free_ char *section = section_symbol_name(name);
+	if (!section)
+		return &drgn_enomem;
+
+	_cleanup_symbol_ struct drgn_symbol *sym = NULL;
+	err = drgn_program_find_symbol_by_name(prog, section, &sym);
+	if (err)
+		return err;
+
+	*ret = sym->address;
+	return NULL;
+}
+
+/**
+ * Index the BTF data for quick access by type ID.
+ */
+static struct drgn_error *drgn_btf_index(struct drgn_prog_btf *bf)
+{
+	struct btf_type *tp;
+	for (tp = bf->tp; !btf_type_end(bf, tp); tp = btf_next(tp)) {
+		uint32_t type_id = type_vector_size(&bf->index);
+		if (!type_vector_append(&bf->index, &tp))
+			return &drgn_enomem;
+
+		const char *name = btf_str(bf, tp->name_off);
+		struct name_entry value = {};
+		value.kind = btf_kind(tp->info);
+		value.type_id = type_id;
+
+		// First, insert the name->type mapping into the hash.
+		// Don't index BTF_KIND_DATASEC names: they aren't real
+		// types.
+		if (name && name[0] && value.kind != BTF_KIND_DATASEC
+		    && !index_name(bf, name, &value))
+			return &drgn_enomem;
+
+		// Next, index the enumerators, if relevant.
+		if (value.kind == BTF_KIND_ENUM || value.kind == BTF_KIND_ENUM64) {
+			size_t count = btf_vlen(tp->info);
+			uint32_t *entries = (uint32_t *)&tp[1];
+			size_t scale = value.kind == BTF_KIND_ENUM ? 2 : 3;
+			value.is_enum = 1;
+			for (uint32_t i = 0; i < count; i++) {
+				value.index = i;
+				const char *enumname = btf_str(bf, entries[i * scale]);
+				if (!index_name(bf, enumname, &value))
+					return &drgn_enomem;
+			}
+		} else if (value.kind == BTF_KIND_DATASEC) {
+			struct btf_var_secinfo *si = (struct btf_var_secinfo *)&tp[1];
+			size_t count = btf_vlen(tp->info);
+			uint64_t base;
+			struct drgn_error *err =
+				find_section_base(bf->prog, name, &base);
+
+			// Not all sections base addresses will be found with a
+			// corresponding symbol. Set a heuristic that it will be
+			// an error if it is not an "init" section, or if the
+			// section contains fewer than 10 variables.
+			if (err == &drgn_not_found &&
+				(count < 10 || strstr(name, "init")))
+				continue;
+
+			for (uint32_t i = 0; i < count; i++) {
+				// We need the variable name to do the hash lookup
+				struct btf_type *var = *type_vector_at(&bf->index, si[i].type);
+				const char *varname = btf_str(bf, var->name_off);
+				if (!fixup_var(bf, varname, si[i].type, base + si[i].offset))
+					return drgn_error_format(
+						DRGN_ERROR_OTHER,
+						"cannot find variable from DATASEC '%s' (id: %u) (section '%s')",
+						varname, si[i].type, name);
+			}
+		}
+	}
+
+	/*
+	struct name_map_iterator it = name_map_first(&bf->htab);
+	printf("BTF NAME INDEX\n");
+	while (it.entry) {
+		printf(" => \"%s\"\n", it.entry->key);
+		for (int i = 0; i < namelist_size(&it.entry->value); i++) {
+			struct name_entry *e = namelist_at(&it.entry->value, i);
+			if (e->is_enum)
+				printf("    [%06u] ENUM member\n", e->type_id);
+			else
+				printf("    [%06u] %s\n", e->type_id, kind_names[e->kind]);
+			if (i > 20) {
+				printf("    ... (%d more)\n", i - 20);
+				break;
+			}
+		}
+		it = name_map_next(it);
+	}
+	*/
+	return NULL;
 }
 
 static bool kind_match(uint64_t drgn_flags, struct btf_type *tp)
@@ -193,48 +406,6 @@ static bool kind_match(uint64_t drgn_flags, struct btf_type *tp)
 	default:
 		return false;
 	}
-}
-
-/**
- * Perform a linear search of the BTF type section for a type of given name and
- * kind.
- */
-static uint32_t drgn_btf_lookup(struct drgn_prog_btf *bf, const char *name,
-				size_t name_len, uint64_t drgn_flags)
-{
-	struct btf_type *tp;
-	for (uint32_t i = 1; i < type_vector_size(&bf->index); i++) {
-		tp = *type_vector_at(&bf->index, i);
-
-		if (!tp->name_off)
-			continue;
-		if (!kind_match(drgn_flags, tp))
-			continue;
-
-		const char *bs = btf_str(bf, tp->name_off);
-		if (strncmp(bs, name, name_len) != 0 || bs[name_len])
-			continue;
-		return i;
-	}
-	return 0; /* void anyway */
-}
-
-static uint32_t drgn_btf_lookup_def(struct drgn_prog_btf *bf, const char *name,
-				    size_t name_len)
-{
-	struct btf_type *tp;
-	for (uint32_t i = 1; i < type_vector_size(&bf->index); i++) {
-		tp = *type_vector_at(&bf->index, i);
-		int kind = btf_kind(tp->info);
-		if ((kind == BTF_KIND_VAR || kind == BTF_KIND_FUNC) &&
-		    tp->name_off) {
-			const char *bs = btf_str(bf, tp->name_off);
-			if (strncmp(btf_str(bf, tp->name_off), name, name_len) == 0
-			    && !bs[name_len])
-				return i;
-		}
-	}
-	return 0; /* void anyway */
 }
 
 /**
@@ -781,60 +952,54 @@ drgn_type_from_btf(uint64_t flags, const char *name,
 		   size_t name_len, const char *filename,
 		   void *arg, struct drgn_qualified_type *ret)
 {
-	uint32_t idx;
 	struct drgn_prog_btf *bf = arg;
 
-	idx = drgn_btf_lookup(bf, name, name_len, flags);
-	if (!idx)
+	_cleanup_free_ char *name_copy = strndup(name, name_len);
+	struct name_map_iterator it =
+		name_map_search(&bf->htab, (const char **)&name_copy);
+	if (!it.entry)
 		return &drgn_not_found;
 
-	return drgn_btf_type_create(bf, idx, ret);
+	struct namelist *l = &it.entry->value;
+	for (int i = 0; i < type_vector_size(&bf->index); i++) {
+		struct name_entry *entry = namelist_at(l, i);
+		struct btf_type *tp = *type_vector_at(&bf->index, entry->type_id);
+
+		if (!tp->name_off)
+			continue;
+		if (!kind_match(flags, tp))
+			continue;
+
+		return drgn_btf_type_create(bf, entry->type_id, ret);
+	}
+	return &drgn_not_found;
 }
 
 static struct drgn_error *
-drgn_btf_lookup_enumval(struct drgn_prog_btf *bf, const char *name,
-			size_t name_len, struct drgn_object *ret)
+make_constant(struct drgn_prog_btf *bf, struct name_entry *entry,
+	      struct drgn_object *ret)
 {
 	struct drgn_qualified_type qt;
-	struct drgn_error *err;
-	uint32_t tid;
-	struct btf_type *tp;
+	struct btf_type *tp = *type_vector_at(&bf->index, entry->type_id);
 	union {uint64_t u; int64_t s; } val;
 	bool signed_;
 
-	for (tid = 1; tid < type_vector_size(&bf->index); tid++) {
-		tp = *type_vector_at(&bf->index, tid);
-		size_t count = btf_vlen(tp->info);
-		signed_ = BTF_INFO_KFLAG(tp->info);
-		if (btf_kind(tp->info) == BTF_KIND_ENUM) {
-			struct btf_enum *enum32 = (struct btf_enum *)&tp[1];
-			for (uint32_t j = 0; j < count; j++) {
-				const char *s = btf_str(bf, enum32[j].name_off);
-				if (strncmp(s, name, name_len) == 0 && !s[name_len]) {
-					if (signed_)
-						val.s = enum32[j].val;
-					else
-						val.u = enum32[j].val;
-					goto found;
-				}
-			}
-		}
-		else if (btf_kind(tp->info) == BTF_KIND_ENUM64) {
-			struct btf_enum64 *enum64 = (struct btf_enum64 *)&tp[1];
-			for (uint32_t j = 0; j < count; j++) {
-				const char *s = btf_str(bf, enum64[j].name_off);
-				if (strncmp(s, name, name_len) == 0 && !s[name_len]) {
-					val.u = (uint64_t)enum64[j].val_hi32 << 32;
-					val.u |= (uint64_t)enum64[j].val_lo32;
-					goto found;
-				}
-			}
-		}
+	size_t count = btf_vlen(tp->info);
+	signed_ = BTF_INFO_KFLAG(tp->info);
+	if (btf_kind(tp->info) == BTF_KIND_ENUM) {
+		struct btf_enum *enum32 = (struct btf_enum *)&tp[1];
+		if (signed_)
+			val.s = enum32[entry->index].val;
+		else
+			val.u = enum32[entry->index].val;
+	} else if (btf_kind(tp->info) == BTF_KIND_ENUM64) {
+		struct btf_enum64 *enum64 = (struct btf_enum64 *)&tp[1];
+		val.u = (uint64_t)enum64[entry->index].val_hi32 << 32;
+		val.u |= (uint64_t)enum64[entry->index].val_lo32;
+	} else {
+		assert(false);
 	}
-	return &drgn_not_found;
-
-found:
-	err = drgn_btf_type_create(bf, tid, &qt);
+	struct drgn_error *err = drgn_btf_type_create(bf, entry->type_id, &qt);
 	if (err)
 		return err;
 	if (signed_)
@@ -843,61 +1008,86 @@ found:
 		return drgn_object_set_unsigned(ret, qt, val.u, 0);
 }
 
+static struct drgn_error *
+make_function(struct drgn_prog_btf *bf, const char *name, struct name_entry *entry,
+	      struct drgn_object *ret)
+{
+	struct btf_type *tp = *type_vector_at(&bf->index, entry->type_id);
+
+	_cleanup_symbol_ struct drgn_symbol *sym = NULL;
+	struct drgn_error *err =
+		drgn_program_find_symbol_by_name(bf->prog, name, &sym);
+	if (err)
+		return err;
+
+	// TODO: is this check necessary?
+	if (sym->kind != DRGN_SYMBOL_KIND_FUNC)
+		return &drgn_not_found;
+
+	struct drgn_qualified_type qt;
+	err = drgn_btf_type_create(bf, tp->type, &qt);
+	if (err) {
+		return err;
+	}
+	return drgn_object_set_reference(ret, qt, sym->address, 0, 0);
+}
+
+static struct drgn_error *
+make_variable(struct drgn_prog_btf *bf, const char *name, struct name_entry *entry,
+	      struct drgn_object *ret)
+{
+
+	if (!entry->is_present)
+		return drgn_error_format(DRGN_ERROR_OTHER,
+					 "address information for \"%s\" is not present in a BTF DATASEC",
+					 name);
+
+	struct btf_type *tp = *type_vector_at(&bf->index, entry->type_id);
+	struct drgn_qualified_type qt;
+	struct drgn_error *err = drgn_btf_type_create(bf, tp->type, &qt);
+	if (err)
+		return err;
+	return drgn_object_set_reference(ret, qt, entry->addr, 0, 0);
+}
+
 static struct drgn_error *drgn_btf_object_find(
 	const char *name, size_t name_len, const char *filename,
 	enum drgn_find_object_flags flags, void *arg, struct drgn_object *ret)
 {
 	struct drgn_prog_btf *bf = arg;
 	struct drgn_program *prog = bf->prog;
-	_cleanup_symbol_ struct drgn_symbol *sym = NULL;
+	_cleanup_free_ char *name_copy = strndup(name, name_len);
+	struct name_map_iterator it =
+		name_map_search(&bf->htab, (const char **)&name_copy);
+	if (!it.entry)
+		return &drgn_not_found;
 
-	if (flags == DRGN_FIND_OBJECT_CONSTANT)
-		goto check_enum;
-
-	/*
-	 * Search for variables or functions. These are of type VAR or FUNC in
-	 * the BTF, they will have a name and their "type" field will point to
-	 * the actual type of the var/func. We will find the corresponding
-	 * symbol's address and construct an object in that way.
-	 */
-	uint32_t type_id = drgn_btf_lookup_def(bf, name, name_len);
-	if (!type_id)
-		goto check_enum;
-
-	struct drgn_error *err =
-		drgn_program_find_symbol_by_name(prog, name, &sym);
-	if (err)
-		return err;
-
-	struct btf_type *tp = *type_vector_at(&bf->index, type_id);
-	int kind = btf_kind(tp->info);
-	if ((kind == BTF_KIND_VAR) && !(flags & DRGN_FIND_OBJECT_VARIABLE)) {
-		goto check_enum;
-	} else if ((kind == BTF_KIND_FUNC) && !(flags & DRGN_FIND_OBJECT_FUNCTION)) {
-		goto check_enum;
+	struct namelist *l = &it.entry->value;
+	for (int i = 0; i < namelist_size(l); i++) {
+		struct name_entry *entry = namelist_at(l, i);
+		if (entry->is_enum && (flags & DRGN_FIND_OBJECT_CONSTANT)) {
+			return make_constant(bf, entry, ret);
+		} else if (entry->kind == BTF_KIND_VAR &&
+			   (flags & DRGN_FIND_OBJECT_VARIABLE)) {
+			return make_variable(bf, name, entry, ret);
+		} else if (entry->kind == BTF_KIND_FUNC &&
+			   (flags & DRGN_FIND_OBJECT_FUNCTION)) {
+			return make_function(bf, name, entry, ret);
+		}
 	}
-
-	struct drgn_qualified_type qualified_type;
-	err = drgn_btf_type_create(bf, tp->type, &qualified_type);
-	if (err) {
-		return err;
-	}
-	return drgn_object_set_reference(ret, qualified_type, sym->address, 0, 0);
-
-check_enum:
-	/*
-	 * Search for enumerators. These need a special search case because they
-	 * are held within the "btf_enum" struct inside of each BTF enum entry.
-	 * If we find a match, we can directly use the found type, and construct
-	 * a value object instead of a reference.
-	 */
-	if (flags & DRGN_FIND_OBJECT_CONSTANT)
-		return drgn_btf_lookup_enumval(bf, name, name_len, ret);
 	return &drgn_not_found;
 }
 
 static void drgn_btf_destroy(struct drgn_prog_btf *bf)
 {
+	// The name map values are a dynamically allocated vector of entries,
+	// free them before deinit.
+	struct name_map_iterator it = name_map_first(&bf->htab);
+	while (it.entry) {
+		namelist_deinit(&it.entry->value);
+		it = name_map_next(it);
+	}
+	name_map_deinit(&bf->htab);
 	free(bf->cache);
 	free(bf->ptr);
 	type_vector_deinit(&bf->index);
@@ -972,6 +1162,7 @@ drgn_btf_init(struct drgn_program *prog, uint64_t start, uint64_t bytes)
 	pbtf->type = pbtf->ptr + pbtf->hdr->hdr_len + pbtf->hdr->type_off;
 	pbtf->str = pbtf->ptr + pbtf->hdr->hdr_len + pbtf->hdr->str_off;
 	pbtf->prog = prog;
+	name_map_init(&pbtf->htab);
 	err = drgn_btf_index(pbtf);
 	if (err)
 		goto out_free;
