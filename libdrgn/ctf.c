@@ -1040,7 +1040,10 @@ drgn_ctf_find_constant(struct drgn_ctf_info *info, const char *name, ctf_dict_t 
 			continue;
 		/* A match! Construct an object. */
 		struct drgn_qualified_type qt = {0};
-		err = drgn_enum_from_ctf(info, node->dict, node->id, &qt);
+
+		/* While we know this is an enum, we should use
+		 * drgn_type_from_ctf_id() so that we leverage our cache of types */
+		err = drgn_type_from_ctf_id(info, node->dict, node->id, &qt, false);
 		if (err)
 			return err;
 		return drgn_object_set_signed(ret, qt, node->val, 0);
