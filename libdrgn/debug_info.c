@@ -322,6 +322,7 @@ struct drgn_error *drgn_module_find_or_create(struct drgn_program *prog,
 
 	module->prog = prog;
 	module->kind = key->kind;
+	drgn_object_init(&module->object, prog);
 	// Linux userspace core dumps usually filter out file-backed mappings
 	// (see coredump_filter in core(5)), so we need the loaded file to read
 	// the text. Additionally, .eh_frame is in the loaded file and not the
@@ -413,6 +414,7 @@ struct drgn_error *drgn_module_find_or_create(struct drgn_program *prog,
 err_name:
 	free(module->name);
 err_module:
+	drgn_object_deinit(&module->object);
 	free(module);
 	return err;
 }
@@ -514,6 +516,7 @@ static void drgn_module_destroy(struct drgn_module *module)
 	drgn_elf_file_destroy(module->loaded_file);
 	free(module->build_id);
 	free(module->name);
+	drgn_object_deinit(&module->object);
 	free(module);
 }
 
@@ -984,6 +987,12 @@ drgn_module_wanted_supplementary_debug_file(struct drgn_module *module,
 	return wanted
 	       ? DRGN_SUPPLEMENTARY_FILE_GNU_DEBUGALTLINK
 	       : DRGN_SUPPLEMENTARY_FILE_NONE;
+}
+
+LIBDRGN_PUBLIC struct drgn_error *
+drgn_module_object(struct drgn_module *module, struct drgn_object *ret)
+{
+	return drgn_object_copy(ret, &module->object);
 }
 
 static struct drgn_error *

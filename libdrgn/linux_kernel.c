@@ -1247,7 +1247,7 @@ kernel_module_set_section_addresses(struct drgn_module *module,
 static struct drgn_error *
 kernel_module_find_or_create_internal(const struct drgn_object *module_obj,
 				      struct drgn_module **ret, bool *new_ret,
-				      bool create, bool log)
+				      bool create, bool log, uint64_t address)
 {
 	struct drgn_error *err;
 	struct drgn_program *prog = drgn_object_program(module_obj);
@@ -1337,7 +1337,17 @@ kernel_module_find_or_create_internal(const struct drgn_object *module_obj,
 					 &module, &new);
 	if (err)
 		return err;
-	if (!new) {
+	if (new) {
+		// We take a struct module value object. But to expose to users,
+		// we need to create a reference object of the same type, so the
+		// users won't get stale data.
+		if (address)
+			err = drgn_object_set_reference(&module->object,
+							drgn_object_qualified_type(module_obj),
+							address, 0, 0);
+		if (err)
+			return err;
+	} else {
 		*ret = no_cleanup_ptr(module);
 		if (new_ret)
 			*new_ret = new;
@@ -1393,6 +1403,7 @@ drgn_module_find_or_create_linux_kernel_loadable_internal(const struct drgn_obje
 							  bool create)
 {
 	struct drgn_error *err;
+	uint64_t module_address = 0;
 
 	// kernel_module_find_or_create_internal() expects a `struct module`
 	// value.
@@ -1401,21 +1412,25 @@ drgn_module_find_or_create_linux_kernel_loadable_internal(const struct drgn_obje
 	    == DRGN_TYPE_POINTER) {
 		drgn_object_init(&mod, drgn_object_program(module_obj));
 		err = drgn_object_dereference(&mod, module_obj);
-		if (!err)
+		if (!err) {
+			module_address = mod.address;
 			err = drgn_object_read(&mod, &mod);
+		}
 		module_obj = &mod;
 		if (err)
 			goto out;
 	} else if (module_obj->kind != DRGN_OBJECT_VALUE) {
 		drgn_object_init(&mod, drgn_object_program(module_obj));
 		err = drgn_object_read(&mod, module_obj);
+		if (!err)
+			module_address = module_obj->address;
 		module_obj = &mod;
 		if (err)
 			goto out;
 	}
 
 	err = kernel_module_find_or_create_internal(module_obj, ret, new_ret,
-						    create, false);
+						    create, false, module_address);
 out:
 	if (module_obj == &mod)
 		drgn_object_deinit(&mod);
@@ -1494,6 +1509,7 @@ list_walk_err:
 		// for /proc/kcore, it is faster to read the entire structure
 		// (which is <2kB as of Linux 6.5) from the core dump all at
 		// once than it is to read each field individually.
+		uint64_t address = mod.address;
 		err = drgn_object_read(&mod, &mod);
 		if (err)
 			goto list_walk_err;
@@ -1506,7 +1522,7 @@ list_walk_err:
 			goto list_walk_err;
 
 		err = kernel_module_find_or_create_internal(&mod, ret, new_ret,
-							    true, true);
+							    true, true, address);
 		if (err && !drgn_error_is_fatal(err)) {
 			drgn_error_log_warning(prog, err, "ignoring module: ");
 			drgn_error_destroy(err);
