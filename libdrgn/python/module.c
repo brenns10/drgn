@@ -285,6 +285,24 @@ static int Module_set_build_id(Module *self, PyObject *value, void *arg)
 	return 0;
 }
 
+static DrgnObject *Module_object(Module *self, void *arg)
+{
+	struct drgn_error *err;
+
+	struct drgn_program *prog = drgn_module_program(self->module);
+	Program *prog_obj = container_of(prog, Program, prog);
+	_cleanup_pydecref_ DrgnObject *ret = DrgnObject_alloc(prog_obj);
+	if (!ret)
+		return NULL;
+
+	err = drgn_module_object(self->module, &ret->obj);
+	if (err) {
+		set_drgn_error(err);
+		return NULL;
+	}
+	return_ptr(ret);
+}
+
 #define MODULE_FILE_STATUS_GETSET(which)					\
 static PyObject *Module_wants_##which##_file(Module *self)			\
 {										\
@@ -400,6 +418,7 @@ static PyGetSetDef Module_getset[] = {
 	 (setter)Module_set_address_range, drgn_Module_address_range_DOC},
 	{"build_id", (getter)Module_get_build_id, (setter)Module_set_build_id,
 	 drgn_Module_build_id_DOC},
+	{"object", (getter)Module_object, NULL, drgn_Module_object_DOC},
 	{"loaded_file_status", (getter)Module_get_loaded_file_status,
 	 (setter)Module_set_loaded_file_status,
 	 drgn_Module_loaded_file_status_DOC},

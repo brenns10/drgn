@@ -1570,6 +1570,17 @@ drgn_module_wanted_supplementary_debug_file(struct drgn_module *module,
 					    const void **checksum_ret,
 					    size_t *checksum_len_ret);
 
+/**
+ * Return the object associated with this module.
+ *
+ * For Linux kernel loadable modules, this is a reference to the `struct module`
+ * they represent. Other kinds of modules may have other objects.
+ *
+ * @param[out] ret Initialized object where the module object is placed
+ */
+struct drgn_error *
+drgn_module_object(struct drgn_module *module, struct drgn_object *ret);
+
 /** Debugging information finder callback table. */
 struct drgn_debug_info_finder_ops {
 	/**
