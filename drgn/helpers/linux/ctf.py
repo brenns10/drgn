@@ -57,3 +57,13 @@ def load_ctf(
 
         module_finder = load_module_kallsyms(prog)
         prog.register_symbol_finder("module_kallsyms", module_finder, enable_index=1)
+
+        # Ensure drgn's module system is in a good state. Run the module detection
+        # and then ensure that the main module (vmlinux) has the correct address
+        # range. This ensures that built-in ORC can be successfully loaded and used.
+        for module, new in prog.loaded_modules():
+            if new and module.name == "kernel":
+                module.address_range = (
+                    prog.symbol("_stext").address,
+                    prog.symbol("_end").address,
+                )
