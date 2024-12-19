@@ -5,7 +5,8 @@ import os
 import unittest
 
 from _drgn_util.platform import NORMALIZED_MACHINE_NAME
-from drgn import Object, Program, reinterpret
+from drgn import MissingDebugInfoError, Object, Program, reinterpret
+from drgn.helpers.linux import load_module_kallsyms
 from tests import assertReprPrettyEqualsStr, modifyenv
 from tests.linux_kernel import (
     LinuxKernelTestCase,
@@ -58,6 +59,32 @@ class TestStackTrace(LinuxKernelStackTraceTestCase):
     @skip_unless_have_test_kmod
     def test_by_pid_orc(self):
         self._test_by_pid(True)
+
+    @unittest.skipUnless(
+        NORMALIZED_MACHINE_NAME == "x86_64",
+        f"{NORMALIZED_MACHINE_NAME} does not use ORC",
+    )
+    @skip_unless_have_test_kmod
+    def test_by_pid_builtin_orc(self):
+        # Create a program with the core kernel debuginfo loaded,
+        # but without module debuginfo. Load a symbol finder using
+        # kallsyms so that the module's stack traces can still have
+        # usable frame names.
+        prog = Program()
+        prog.set_kernel()
+        try:
+            prog.load_default_debug_info()
+        except MissingDebugInfoError:
+            pass
+        kallsyms = load_module_kallsyms(prog)
+        prog.register_symbol_finder("module_kallsyms", kallsyms, enable_index=1)
+        for thread in prog.threads():
+            if b"drgn_test_kthread".startswith(thread.object.comm.string_()):
+                pid = thread.tid
+                break
+        else:
+            self.fail("couldn't find drgn_test_kthread")
+        self._test_drgn_test_kthread_trace(prog.stack_trace(pid))
 
     @skip_unless_have_test_kmod
     def test_by_pt_regs(self):
