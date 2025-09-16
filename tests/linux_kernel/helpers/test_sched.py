@@ -89,3 +89,10 @@ class TestSched(LinuxKernelTestCase):
         values = loadavg(self.prog)
         self.assertEqual(len(values), 3)
         self.assertTrue(all(v >= 0.0 for v in values))
+
+    @skip_unless_have_test_kmod
+    def test_thread_size(self):
+        self.assertEqual(
+            self.prog["THREAD_SIZE"].value_(),
+            self.prog["drgn_test_thread_size"].value_(),
+        )

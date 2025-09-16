@@ -1617,6 +1617,11 @@ static inline int drgn_test_sysfs_init(void) { return 0; }
 static inline void drgn_test_sysfs_exit(void) {}
 #endif
 
+// thread size
+
+__attribute__((used))
+static unsigned long drgn_test_thread_size = THREAD_SIZE;
+
 static void drgn_test_exit(void)
 {
 	drgn_test_sysfs_exit();
