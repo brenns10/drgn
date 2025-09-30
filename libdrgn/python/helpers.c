@@ -5,6 +5,7 @@
 #include "../helpers.h"
 #include "../kallsyms.h"
 #include "../program.h"
+#include "../linux_kernel.h"
 
 PyObject *drgnpy_linux_helper_direct_mapping_offset(PyObject *self, PyObject *arg)
 {
@@ -361,4 +362,24 @@ drgnpy_linux_helper_load_builtin_kallsyms(PyObject *self, PyObject *args,
 	if (err)
 		return set_drgn_error(err);
 	return (PyObject *)no_cleanup_ptr(index);
+}
+
+PyObject *
+drgnpy_linux_helper_is_irq_regs(PyObject *self, PyObject *args,
+				PyObject *kwds)
+{
+	static char *kwnames[] = {"prog", "ptr", NULL};
+	PyObject *prog_obj;
+	struct index_arg addr = {};
+	if (!PyArg_ParseTupleAndKeywords(args, kwds, "O!O&:load_builtin_kallsyms",
+					 kwnames, &Program_type, &prog_obj,
+					 index_converter, &addr))
+		return NULL;
+
+	struct drgn_program *prog = &((Program *)prog_obj)->prog;
+	bool is_irq_regs;
+	struct drgn_error *err = drgn_program_is_irq_regs(prog, addr.uvalue, &is_irq_regs);
+	if (err)
+		return set_drgn_error(err);
+	Py_RETURN_BOOL(is_irq_regs);
 }
