@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #include "drgnpy.h"
-#include "../btf.h"
 #include "../helpers.h"
 #include "../kallsyms.h"
 #include "../program.h"
@@ -368,6 +367,7 @@ PyObject *drgnpy_linux_helper_load_btf(PyObject *self, PyObject *args,
 				       PyObject *kwds)
 
 {
+	#ifdef WITH_BPF
 	static char *keywords[] = {"prog", NULL};
 	Program *prog;
 	if (!PyArg_ParseTupleAndKeywords(args, kwds, "O!:load_btf",
@@ -380,4 +380,10 @@ PyObject *drgnpy_linux_helper_load_btf(PyObject *self, PyObject *args,
 		return NULL;
 	}
 	return Py_None;
+	#else
+	PyErr_SetString(PyExc_NotImplementedError,
+	                "BTF support is not available, configure drgn with "
+	                "--with-bpf to enable");
+        return NULL;
+	#endif
 }

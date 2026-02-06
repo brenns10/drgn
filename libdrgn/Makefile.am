@@ -52,8 +52,6 @@ libdrgn_common_la_SOURCES = $(ARCH_DEFS_PYS:_defs.py=.c) \
 			    binary_search_tree.h \
 			    bitmap.h \
 			    bitops.h \
-			    btf.c \
-			    btf.h \
 			    c_keywords.inc \
 			    c_lexer.h \
 			    cfi.c \
@@ -159,6 +157,12 @@ if WITH_LIBKDUMPFILE
 libdrgn_common_la_SOURCES += kdump.c
 libdrgn_common_la_CFLAGS += $(libkdumpfile_CFLAGS)
 libdrgn_common_la_LIBADD += $(libkdumpfile_LIBS)
+endif
+
+if WITH_BPF
+libdrgn_common_la_SOURCES += btf.c
+libdrgn_common_la_CFLAGS += $(bpf_CFLAGS)
+libdrgn_common_la_LIBADD += $(bpf_LIBS)
 endif
 
 if ENABLE_PYTHON

@@ -541,4 +541,8 @@ drgn_blocking_guard_cleanup(drgn_blocking_state *statep)
  * @}
  */
 
+#ifdef WITH_BPF
+/* Load BTF type and object finder. Symbol finder must alerady be present. */
+struct drgn_error *drgn_program_load_btf(struct drgn_program *prog);
+#endif
 #endif /* DRGN_PROGRAM_H */
