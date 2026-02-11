@@ -24,6 +24,7 @@ _ROOTFS_PACKAGES = (
     "automake",
     "gcc",
     "git",
+    "libbpf-dev",
     "libdw-dev",
     "libelf-dev",
     "libjson-c-dev",
