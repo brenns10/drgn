@@ -499,17 +499,17 @@ class TestTypeFinder(TestCase):
 
         # We don't test every corner case because the symbol finder tests cover
         # the shared part.
-        self.assertEqual(prog.registered_type_finders(), {"dwarf"})
-        self.assertEqual(prog.enabled_type_finders(), ["dwarf"])
+        self.assertEqual(prog.registered_type_finders(), {"btf", "dwarf"})
+        self.assertEqual(prog.enabled_type_finders(), ["btf", "dwarf"])
 
         prog.register_type_finder(
             "foo", lambda prog, kinds, name, filename: None, enable_index=-1
         )
-        self.assertEqual(prog.registered_type_finders(), {"dwarf", "foo"})
-        self.assertEqual(prog.enabled_type_finders(), ["dwarf", "foo"])
+        self.assertEqual(prog.registered_type_finders(), {"btf", "dwarf", "foo"})
+        self.assertEqual(prog.enabled_type_finders(), ["btf", "dwarf", "foo"])
 
         prog.set_enabled_type_finders(["foo"])
-        self.assertEqual(prog.registered_type_finders(), {"dwarf", "foo"})
+        self.assertEqual(prog.registered_type_finders(), {"btf", "dwarf", "foo"})
         self.assertEqual(prog.enabled_type_finders(), ["foo"])
 
     def test_add_type_finder(self):
@@ -607,17 +607,17 @@ class TestObjectFinder(TestCase):
 
         # We don't test every corner case because the symbol finder tests cover
         # the shared part.
-        self.assertEqual(prog.registered_object_finders(), {"dwarf"})
-        self.assertEqual(prog.enabled_object_finders(), ["dwarf"])
+        self.assertEqual(prog.registered_object_finders(), {"btf", "dwarf"})
+        self.assertEqual(prog.enabled_object_finders(), ["btf", "dwarf"])
 
         prog.register_object_finder(
             "foo", lambda prog, name, flags, filename: None, enable_index=-1
         )
-        self.assertEqual(prog.registered_object_finders(), {"dwarf", "foo"})
-        self.assertEqual(prog.enabled_object_finders(), ["dwarf", "foo"])
+        self.assertEqual(prog.registered_object_finders(), {"btf", "dwarf", "foo"})
+        self.assertEqual(prog.enabled_object_finders(), ["btf", "dwarf", "foo"])
 
         prog.set_enabled_object_finders(["foo"])
-        self.assertEqual(prog.registered_object_finders(), {"dwarf", "foo"})
+        self.assertEqual(prog.registered_object_finders(), {"btf", "dwarf", "foo"})
         self.assertEqual(prog.enabled_object_finders(), ["foo"])
 
     def test_add_object_finder(self):

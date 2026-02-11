@@ -1,6 +1,7 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
+import atexit
 import contextlib
 import ctypes
 import enum
@@ -25,12 +26,16 @@ import unittest
 
 from _drgn_util.platform import _IO, _IOR, NORMALIZED_MACHINE_NAME, SYS
 import drgn
+from drgn.helpers.linux.kallsyms import load_module_kallsyms, load_vmlinux_kallsyms
 from tests import TestCase
 
 
 class LinuxKernelTestCase(TestCase):
     prog = None
+    dwarf_prog = None
+    btf_prog = None
     skip_reason = None
+    btf_skip_reason = None
 
     @staticmethod
     def _load_debug_info(prog):
@@ -40,6 +45,83 @@ class LinuxKernelTestCase(TestCase):
         except KeyError:
             pass
         prog.load_debug_info(paths, True)
+
+    @classmethod
+    def makeBTFProg(cls):
+        try:
+            cls.prog.symbol("btf_modules")
+        except LookupError:
+            # No BTF module support: don't bother with BTF tests.
+            return
+
+        from drgn import Object, FindObjectFlags
+        from contrib.record_btf_decls import _format_type
+
+        # Create a BTF program that relies on the DWARF program for knowing  the
+        # declaration of each variable. It still uses the BTF type definition,
+        # but since the variable type mapping is not yet available, this gap
+        # needs to be bridged.
+        object_mapping = {
+            ("modules", None): "struct list_head",
+            ("btf_modules", None): "struct list_head",
+        }
+
+        def ofind(prog, name, flags, filename):
+            if flags & FindObjectFlags.VARIABLE:
+                if (name, filename) not in object_mapping:
+                    try:
+                        obj = cls.prog.variable(name, filename)
+                    except LookupError:
+                        object_mapping[(name, filename)] = None
+                    else:
+                        object_mapping[(name, filename)] = _format_type(obj.type_, None)
+                    print(name, filename, object_mapping[(name, filename)], file=sys.stderr)
+
+                tpname = object_mapping[(name, filename)]
+                if tpname:
+                    return Object(prog, tpname, address=prog.symbol(name).address)
+            return None
+
+        prog = drgn.Program()
+        prog.set_kernel()
+        finder = load_vmlinux_kallsyms(prog)
+        prog.register_symbol_finder("vmlinux_kallsyms", finder, enable_index=0)
+        kernel = prog.main_module("kernel", create=True)
+        kernel.address_range = (
+            prog.symbol("_stext").address,
+            prog.symbol("_end").address,
+        )
+        kernel.load_btf()
+        prog.register_object_finder("btf_testing", ofind, enable_index=1)
+        for mod, new in prog.loaded_modules():
+            if new:
+                mod.load_btf()
+        module_finder = load_module_kallsyms(prog)
+        prog.register_symbol_finder("module_kallsyms", module_finder, enable_index=1)
+        LinuxKernelTestCase.btf_prog = prog
+
+    @classmethod
+    def __init_subclass__(cls):
+        for attr in dir(cls):
+            if not attr.startswith("test_"):
+                continue
+
+            test_func = getattr(cls, attr)
+            def test(self, *args, **kwargs):
+                if self.btf_prog is None:
+                    self.skipTest("No BTF program available")
+                elif self.btf_skip_reason is not None:
+                    self.skipTest(self.btf_skip_reason)
+                old_prog = self.prog
+                self.prog = self.btf_prog
+                try:
+                    test_func(self, *args, **kwargs)
+                finally:
+                    self.prog = old_prog
+
+            test.__name__ = test_func.__name__ + "_WITH_BTF"
+            test.__qualname__ = test_func.__qualname__ + "_WITH_BTF"
+            setattr(cls, test.__name__, test)
 
     @classmethod
     def setUpClass(cls):
@@ -83,6 +165,7 @@ class LinuxKernelTestCase(TestCase):
                     try:
                         cls._load_debug_info(prog)
                         LinuxKernelTestCase.prog = prog
+                        cls.makeBTFProg()
                         return
                     except drgn.MissingDebugInfoError as e:
                         if force_run:

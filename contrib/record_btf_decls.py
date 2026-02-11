@@ -37,12 +37,20 @@ def _format_type(tp: Type, name: Optional[str]) -> str:
         else:
             return f"{tp.kind.name.lower()} {tp.tag}"
     elif tp.kind == TypeKind.POINTER:
-        return _format_type(tp.type, f"*{name}")
-    elif tp.kind == TypeKind.ARRAY:
-        if tp.length is None:
-            return _format_type(tp.type, f"{name}[]")
+        if name:
+            return _format_type(tp.type, f"*{name}")
         else:
-            return _format_type(tp.type, f"{name}[{tp.length}]")
+            return _format_type(tp.type, name) + "*"
+    elif tp.kind == TypeKind.ARRAY:
+        length = "" if tp.length is None else str(tp.length)
+        return f"{_format_type(tp.type, name)}[{length}]"
+    elif tp.kind == TypeKind.VOID:
+        # while void variables cannot be declared, void pointers can, they will
+        # have non-None name
+        if name:
+            return f"void {name}"
+        else:
+            return "void"
     elif tp.kind == TypeKind.FUNCTION:
         raise NotImplementedError("function declarations are not implemented")
     elif name:

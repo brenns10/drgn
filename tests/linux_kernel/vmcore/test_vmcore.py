@@ -4,7 +4,8 @@
 import unittest
 
 from _drgn_util.platform import NORMALIZED_MACHINE_NAME
-from drgn import Object, Program, ProgramFlags
+from drgn import Object, Program, ProgramFlags, TypeKind
+from drgn.helpers.linux.btf import load_btf
 from drgn.helpers.linux.pid import find_task
 from drgn.helpers.linux.timekeeping import ktime_get_real_seconds
 from tests import TestCase
@@ -111,3 +112,20 @@ class TestVMCoreNoDebugInfo(TestCase):
 
     def test_ktime_get_real_seconds(self):
         self.assertIsInstance(ktime_get_real_seconds(self.prog), Object)
+
+
+class TestBtf(LinuxVMCoreTestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        cls.prog = Program()
+        cls.prog.set_core_dump(VMCORE_PATH)
+        if b"kallsyms_num_syms" not in cls.prog["VMCOREINFO"].string_():
+            raise unittest.SkipTest("VMCOREINFO is missing necessary symbols")
+        load_btf(cls.prog)
+
+    def test_modules(self):
+        modules = self.prog["modules"]
+        tp = modules.type_
+        self.assertEqual(tp.kind, TypeKind.STRUCT)
+        self.assertEqual(tp.tag, "list_head")
