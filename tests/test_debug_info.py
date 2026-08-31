@@ -13,6 +13,7 @@ import unittest.mock
 
 from _drgn_util.elf import ET, PT, SHF, SHT
 from drgn import (
+    Architecture,
     DebugInfoOptions,
     MainModule,
     MissingDebugInfoError,
@@ -635,7 +636,7 @@ class TestLinuxUserspaceCoreDump(TestCase):
             module = self.prog.main_module()
             found_modules.append(module)
             self.assertEqual(module.name, "/home/osandov/crashme")
-            self.assertEqual(module.address_range, (0x400000, 0x404010))
+            self.assertEqual(module.address_range, (0x400000, 0x405000))
             self.assertEqual(
                 module.build_id.hex(), "99a6524c4df01fbff9b43a6ead3d8e8e6201568b"
             )
@@ -645,7 +646,7 @@ class TestLinuxUserspaceCoreDump(TestCase):
                 "/home/osandov/crashme.so", 0x7F6112CACE08
             )
             found_modules.append(module)
-            self.assertEqual(module.address_range, (0x7F6112CA9000, 0x7F6112CAD010))
+            self.assertEqual(module.address_range, (0x7F6112CA9000, 0x7F6112CAE000))
             self.assertEqual(
                 module.build_id.hex(), "7bd58f10e741c3c8fbcf2031aa65f830f933d616"
             )
@@ -653,7 +654,7 @@ class TestLinuxUserspaceCoreDump(TestCase):
         with self.subTest(module="libc"):
             module = self.prog.shared_library_module("/lib64/libc.so.6", 0x7F6112C94960)
             found_modules.append(module)
-            self.assertEqual(module.address_range, (0x7F6112AAE000, 0x7F6112C9EB70))
+            self.assertEqual(module.address_range, (0x7F6112AAE000, 0x7F6112C9F000))
             self.assertEqual(
                 module.build_id.hex(), "77c77fee058b19c6f001cf2cb0371ce3b8341211"
             )
@@ -663,7 +664,7 @@ class TestLinuxUserspaceCoreDump(TestCase):
                 "/lib64/ld-linux-x86-64.so.2", 0x7F6112CEAE68
             )
             found_modules.append(module)
-            self.assertEqual(module.address_range, (0x7F6112CB6000, 0x7F6112CEC2D8))
+            self.assertEqual(module.address_range, (0x7F6112CB6000, 0x7F6112CED000))
             self.assertEqual(
                 module.build_id.hex(), "91dcd0244204201b616bbf59427771b3751736ce"
             )
@@ -671,7 +672,7 @@ class TestLinuxUserspaceCoreDump(TestCase):
         with self.subTest(module="vdso"):
             module = self.prog.vdso_module("linux-vdso.so.1", 0x7F6112CB4438)
             found_modules.append(module)
-            self.assertEqual(module.address_range, (0x7F6112CB4000, 0x7F6112CB590F))
+            self.assertEqual(module.address_range, (0x7F6112CB4000, 0x7F6112CB6000))
             self.assertEqual(
                 module.build_id.hex(), "fdc3e4d463911345fbc6d9cc432e5ebc276e8e03"
             )
@@ -726,7 +727,7 @@ class TestLinuxUserspaceCoreDump(TestCase):
             module = self.prog.main_module()
             found_modules.append(module)
             self.assertEqual(module.name, "/home/osandov/crashme_pie")
-            self.assertEqual(module.address_range, (0x557ED343D000, 0x557ED3441018))
+            self.assertEqual(module.address_range, (0x557ED343D000, 0x557ED3442000))
             self.assertEqual(
                 module.build_id.hex(), "eb4ad7aaded3815ab133a6d7784a2c95a4e52998"
             )
@@ -736,7 +737,7 @@ class TestLinuxUserspaceCoreDump(TestCase):
                 "/home/osandov/crashme.so", 0x7FAB2C38DE08
             )
             found_modules.append(module)
-            self.assertEqual(module.address_range, (0x7FAB2C38A000, 0x7FAB2C38E010))
+            self.assertEqual(module.address_range, (0x7FAB2C38A000, 0x7FAB2C38F000))
             self.assertEqual(
                 module.build_id.hex(), "7bd58f10e741c3c8fbcf2031aa65f830f933d616"
             )
@@ -744,7 +745,7 @@ class TestLinuxUserspaceCoreDump(TestCase):
         with self.subTest(module="libc"):
             module = self.prog.shared_library_module("/lib64/libc.so.6", 0x7FAB2C375960)
             found_modules.append(module)
-            self.assertEqual(module.address_range, (0x7FAB2C18F000, 0x7FAB2C37FB70))
+            self.assertEqual(module.address_range, (0x7FAB2C18F000, 0x7FAB2C380000))
             self.assertEqual(
                 module.build_id.hex(), "77c77fee058b19c6f001cf2cb0371ce3b8341211"
             )
@@ -754,7 +755,7 @@ class TestLinuxUserspaceCoreDump(TestCase):
                 "/lib64/ld-linux-x86-64.so.2", 0x7FAB2C3CBE68
             )
             found_modules.append(module)
-            self.assertEqual(module.address_range, (0x7FAB2C397000, 0x7FAB2C3CD2D8))
+            self.assertEqual(module.address_range, (0x7FAB2C397000, 0x7FAB2C3CE000))
             self.assertEqual(
                 module.build_id.hex(), "91dcd0244204201b616bbf59427771b3751736ce"
             )
@@ -762,7 +763,7 @@ class TestLinuxUserspaceCoreDump(TestCase):
         with self.subTest(module="vdso"):
             module = self.prog.vdso_module("linux-vdso.so.1", 0x7FAB2C395438)
             found_modules.append(module)
-            self.assertEqual(module.address_range, (0x7FAB2C395000, 0x7FAB2C39690F))
+            self.assertEqual(module.address_range, (0x7FAB2C395000, 0x7FAB2C397000))
             self.assertEqual(
                 module.build_id.hex(), "fdc3e4d463911345fbc6d9cc432e5ebc276e8e03"
             )
@@ -812,7 +813,7 @@ class TestLinuxUserspaceCoreDump(TestCase):
             module = self.prog.main_module()
             found_modules.append(module)
             self.assertEqual(module.name, "/home/osandov/crashme_static")
-            self.assertEqual(module.address_range, (0x400000, 0x4042B8))
+            self.assertEqual(module.address_range, (0x400000, 0x405000))
             self.assertEqual(
                 module.build_id.hex(), "a0b6befad9f0883c52c475ba3cee9c549cd082cf"
             )
@@ -820,7 +821,7 @@ class TestLinuxUserspaceCoreDump(TestCase):
         with self.subTest(module="vdso"):
             module = self.prog.vdso_module("linux-vdso.so.1", 0x7FBC73A66438)
             found_modules.append(module)
-            self.assertEqual(module.address_range, (0x7FBC73A66000, 0x7FBC73A6790F))
+            self.assertEqual(module.address_range, (0x7FBC73A66000, 0x7FBC73A68000))
             self.assertEqual(
                 module.build_id.hex(), "fdc3e4d463911345fbc6d9cc432e5ebc276e8e03"
             )
@@ -862,7 +863,7 @@ class TestLinuxUserspaceCoreDump(TestCase):
             module = self.prog.main_module()
             found_modules.append(module)
             self.assertEqual(module.name, "/home/osandov/crashme_static_pie")
-            self.assertEqual(module.address_range, (0x7FD981DC9000, 0x7FD981DCD278))
+            self.assertEqual(module.address_range, (0x7FD981DC9000, 0x7FD981DCE000))
             self.assertEqual(
                 module.build_id.hex(), "3e0bc47f80d7e64724e11fc021a251ed0d35bc2c"
             )
@@ -870,7 +871,7 @@ class TestLinuxUserspaceCoreDump(TestCase):
         with self.subTest(module="vdso"):
             module = self.prog.vdso_module("linux-vdso.so.1", 0x7FD981DC7438)
             found_modules.append(module)
-            self.assertEqual(module.address_range, (0x7FD981DC7000, 0x7FD981DC890F))
+            self.assertEqual(module.address_range, (0x7FD981DC7000, 0x7FD981DC9000))
             self.assertEqual(
                 module.build_id.hex(), "fdc3e4d463911345fbc6d9cc432e5ebc276e8e03"
             )
@@ -921,7 +922,7 @@ class TestLinuxUserspaceCoreDump(TestCase):
         with self.subTest(module="vdso"):
             module = self.prog.vdso_module("linux-vdso.so.1", 0x7F299F607438)
             found_modules.append(module)
-            self.assertEqual(module.address_range, (0x7F299F607000, 0x7F299F60890F))
+            self.assertEqual(module.address_range, (0x7F299F607000, 0x7F299F609000))
             self.assertEqual(
                 module.build_id.hex(), "fdc3e4d463911345fbc6d9cc432e5ebc276e8e03"
             )
@@ -1897,7 +1898,12 @@ class TestStandardDebugInfoFinder(TestCase):
         self.prog.load_module_debug_info(module)
         self.assertEqual(module.loaded_file_status, ModuleFileStatus.HAVE)
         self.assertEqual(module.loaded_file_path, "[vdso]")
-        self.assertEqual(module.debug_file_status, ModuleFileStatus.WANT)
+        # On ppc64, the vDSO does indeed have debuginfo, but when running tests
+        # via binfmt-misc (as vmtest's --local does), the host system's vDSO is
+        # what's visible. Since we can't reliably know what to expect, skip the
+        # assertion for ppc64.
+        if self.prog.platform.arch != Architecture.PPC64:
+            self.assertEqual(module.debug_file_status, ModuleFileStatus.WANT)
 
     def test_shared_library_by_proc(self):
         self.prog.set_pid(os.getpid())
